@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Predictive Ponies</title>
+  <meta name="description" content="Horse race win probabilities, rankings, model explanations and odds comparisons.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap">
+      <h1>Predictive Ponies</h1>
+      <p class="tagline">XML race data → Python features → conditional-logit model → win probabilities</p>
+      <nav aria-label="Sections">
+        <button type="button" class="tab" aria-selected="true" data-tab="races">Races</button>
+        <button type="button" class="tab" aria-selected="false" data-tab="model">Model &amp; backtest</button>
+        <button type="button" class="tab" aria-selected="false" data-tab="about">How it works</button>
+      </nav>
+    </div>
+  </header>
+
+  <div id="synthetic-banner" class="banner" role="status" hidden>
+    Showing <strong>synthetic sample data</strong>. Add real XML files to <code>data/raw/</code> and re-run the pipeline.
+  </div>
+
+  <main id="main" class="wrap">
+    <p id="load-error" class="error" role="alert" hidden></p>
+
+    <!-- ===== Races ===== -->
+    <section id="tab-races" class="panel">
+      <div class="controls">
+        <label>Show
+          <select id="kind-filter">
+            <option value="upcoming">Upcoming races</option>
+            <option value="backtest">Backtest races (with results)</option>
+          </select>
+        </label>
+        <label>Race
+          <select id="race-select"></select>
+        </label>
+      </div>
+      <div id="race-header" class="race-header"></div>
+      <div class="table-scroll">
+        <table id="race-table">
+          <caption class="sr-only">Runners ranked by model win probability. Select a row to see why.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Rank</th>
+              <th scope="col">#</th>
+              <th scope="col">Horse</th>
+              <th scope="col" class="hide-sm">Jockey / Trainer</th>
+              <th scope="col">Win prob.</th>
+              <th scope="col" class="num">Fair odds</th>
+              <th scope="col" class="num">M/L odds</th>
+              <th scope="col" class="num hide-sm">M/L implied</th>
+              <th scope="col" class="num">Edge</th>
+              <th scope="col" class="num result-col">Finish</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint">Edge = model probability × decimal morning-line odds − 1. Positive means the model thinks the horse is better than its odds suggest. ★ marks edge above the value threshold.</p>
+
+      <section id="explain" class="card" aria-live="polite">
+        <h2>Why the model likes (or doesn't like) this horse</h2>
+        <p class="muted">Select a runner above.</p>
+      </section>
+    </section>
+
+    <!-- ===== Model ===== -->
+    <section id="tab-model" class="panel" hidden>
+      <div class="grid">
+        <div class="card"><h2>Backtest summary</h2><div id="metrics"></div></div>
+        <div class="card"><h2>Calibration</h2><div id="calibration"></div>
+          <p class="hint">Points on the diagonal mean predicted probabilities match how often horses actually won.</p></div>
+      </div>
+      <div class="card"><h2>Feature weights</h2>
+        <p class="hint">Weights act on standardised features (1 unit = 1 standard deviation). Bigger bar = bigger effect on win chance.</p>
+        <div id="weights"></div></div>
+    </section>
+
+    <!-- ===== About ===== -->
+    <section id="tab-about" class="panel" hidden>
+      <div class="card prose">
+        <h2>How it works</h2>
+        <ol class="pipeline">
+          <li><strong>Horse racing XML files</strong> — race entries, past performances and historical results (<code>ponies/xml_io.py</code>).</li>
+          <li><strong>Python data processing</strong> — point-in-time features: speed figures, recent form, distance/surface/condition fit, jockey and trainer win rates (<code>ponies/features.py</code>).</li>
+          <li><strong>Machine-learning model</strong> — a conditional logit (softmax within each race) trained on past races and tested on later races it never saw (<code>ponies/model.py</code>, <code>ponies/evaluate.py</code>).</li>
+          <li><strong>Race prediction dashboard</strong> — this page, reading JSON from <code>docs/data/</code> (<code>ponies/pipeline.py</code>).</li>
+        </ol>
+        <p>Every modelling assumption has an ID like <code>[A-03]</code> listed in
+          <a href="https://github.com/CaptainTeach123/PredictivePonies/blob/HEAD/ASSUMPTIONS.md">ASSUMPTIONS.md</a>.
+          Source: <a href="https://github.com/CaptainTeach123/PredictivePonies">GitHub repository</a>.</p>
+        <p class="muted">For research and entertainment. Not betting advice.</p>
+        <p class="muted" id="generated-at"></p>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

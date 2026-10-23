@@ -1,0 +1,110 @@
+{
+  "generated_at": "2026-10-23T20:53:36+00:00",
+  "synthetic_data": true,
+  "races": 128,
+  "runners": 1158,
+  "date_range": [
+    "2026-05-15",
+    "2026-06-27"
+  ],
+  "log_loss": {
+    "model": 1.6019,
+    "uniform": 2.1794,
+    "market": 1.4018,
+    "model_on_market_races": 1.6019
+  },
+  "mcfadden_r2_vs_uniform": 0.265,
+  "brier": 0.08042,
+  "top_pick_win_rate": {
+    "model": 0.375,
+    "market_favourite": 0.4844
+  },
+  "betting_backtest": {
+    "model_top_pick": {
+      "bets": 128,
+      "wins": 48,
+      "profit": -37.2,
+      "roi": -0.2906
+    },
+    "value_bets": {
+      "bets": 780,
+      "wins": 31,
+      "profit": 257.9,
+      "roi": 0.3306,
+      "edge_threshold": 0.1
+    }
+  },
+  "calibration": [
+    {
+      "bin_low": 0.0,
+      "bin_high": 0.1,
+      "mean_predicted": 0.03817354451860039,
+      "observed_win_rate": 0.03483870967741935,
+      "count": 775
+    },
+    {
+      "bin_low": 0.1,
+      "bin_high": 0.2,
+      "mean_predicted": 0.14222349139741028,
+      "observed_win_rate": 0.18848167539267016,
+      "count": 191
+    },
+    {
+      "bin_low": 0.2,
+      "bin_high": 0.30000000000000004,
+      "mean_predicted": 0.24650746167866133,
+      "observed_win_rate": 0.24691358024691357,
+      "count": 81
+    },
+    {
+      "bin_low": 0.30000000000000004,
+      "bin_high": 0.4,
+      "mean_predicted": 0.34154400688493225,
+      "observed_win_rate": 0.2222222222222222,
+      "count": 45
+    },
+    {
+      "bin_low": 0.4,
+      "bin_high": 0.5,
+      "mean_predicted": 0.4434323759406358,
+      "observed_win_rate": 0.4375,
+      "count": 32
+    },
+    {
+      "bin_low": 0.5,
+      "bin_high": 0.6000000000000001,
+      "mean_predicted": 0.5446220348809475,
+      "observed_win_rate": 0.5294117647058824,
+      "count": 17
+    },
+    {
+      "bin_low": 0.6000000000000001,
+      "bin_high": 0.7000000000000001,
+      "mean_predicted": 0.6387839449204012,
+      "observed_win_rate": 0.5,
+      "count": 6
+    },
+    {
+      "bin_low": 0.7000000000000001,
+      "bin_high": 0.8,
+      "mean_predicted": 0.7218980725817716,
+      "observed_win_rate": 1.0,
+      "count": 5
+    },
+    {
+      "bin_low": 0.8,
+      "bin_high": 0.9,
+      "mean_predicted": 0.8372711299796821,
+      "observed_win_rate": 0.6666666666666666,
+      "count": 6
+    }
+  ],
+  "train": {
+    "races": 512,
+    "runners": 4541,
+    "date_range": [
+      "2025-11-07",
+      "2026-05-15"
+    ]
+  }
+}

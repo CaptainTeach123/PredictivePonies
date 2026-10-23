@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<results track="SYN2" date="2026-04-12">
+  <race number="1" distance_furlongs="8" surface="dirt" condition="fast" class="allowance" purse="100000">
+    <starter program="1" post_position="1" horse_id="H0260" horse_name="Golden Echo" age="3" sex="C" weight_lbs="121" jockey_id="J017" jockey_name="L. Rossi" trainer_id="T005" trainer_name="D. Jensen" morning_line="50-1" final_odds="171-1" finish_position="7" speed_figure="57" beaten_lengths="11.63" />
+    <starter program="2" post_position="2" horse_id="H0495" horse_name="Copper Lantern" age="5" sex="F" weight_lbs="119" jockey_id="J004" jockey_name="M. Ellis" trainer_id="T018" trainer_name="T. Brooks" morning_line="50-1" final_odds="64-1" finish_position="5" speed_figure="65" beaten_lengths="8.48" />
+    <starter program="3" post_position="3" horse_id="H0220" horse_name="Velvet Outlaw" age="2" sex="F" weight_lbs="115" jockey_id="J016" jockey_name="M. Quinn" trainer_id="T008" trainer_name="J. Nash" morning_line="3-2" final_odds="3.6-1" finish_position="2" speed_figure="76" beaten_lengths="3.87" />
+    <starter program="4" post_position="4" horse_id="H0637" horse_name="Dusty Legend" age="4" sex="C" weight_lbs="123" jockey_id="J006" jockey_name="M. Garcia" trainer_id="T011" trainer_name="D. Young" morning_line="20-1" final_odds="3.7-1" finish_position="4" speed_figure="66" beaten_lengths="8.17" />
+    <starter program="5" post_position="5" horse_id="H0437" horse_name="Mighty Legend" age="2" sex="G" weight_lbs="121" jockey_id="J019" jockey_name="R. Turner" trainer_id="T000" trainer_name="J. Lopez" morning_line="50-1" final_odds="78-1" finish_position="6" speed_figure="62" beaten_lengths="9.56" />
+    <starter program="6" post_position="6" horse_id="H0222" horse_name="Electric Rocket" age="2" sex="H" weight_lbs="121" jockey_id="J011" jockey_name="J. Lopez" trainer_id="T007" trainer_name="J. Nash" morning_line="30-1" final_odds="37-1" finish_position="3" speed_figure="67" beaten_lengths="7.71" />
+    <starter program="7" post_position="7" horse_id="H0636" horse_name="Hidden Spirit" age="2" sex="G" weight_lbs="122" jockey_id="J010" jockey_name="M. Kowalski" trainer_id="T008" trainer_name="J. Nash" morning_line="6-5" final_odds="0.4-1" finish_position="1" speed_figure="86" beaten_lengths="0.0" />
+  </race>
+</results>

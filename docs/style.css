@@ -1,0 +1,71 @@
+:root {
+  --bg: #f7f7f5; --surface: #ffffff; --text: #1d1f23; --muted: #5d636e;
+  --border: #dcdde0; --accent: #1f6f50; --accent-soft: #d8ece3;
+  --pos: #1f6f50; --neg: #b3261e; --warn-bg: #fff4d6; --warn-text: #5c4400;
+  --focus: #1a56db;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a; --surface: #1e2125; --text: #e8e9eb; --muted: #a1a7b1;
+    --border: #353a41; --accent: #5cc79b; --accent-soft: #1e3a2f;
+    --pos: #5cc79b; --neg: #ff8a80; --warn-bg: #3a3014; --warn-text: #f5dc9a;
+    --focus: #7aa7ff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.skip { position: absolute; left: -999px; } .skip:focus { left: 8px; top: 8px; background: var(--surface); padding: 8px; z-index: 9; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.site-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 0 0; }
+.site-header h1 { margin: 0; font-size: 1.6rem; }
+.tagline { margin: 4px 0 12px; color: var(--muted); }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+.tab { font: inherit; background: none; border: 0; border-bottom: 3px solid transparent;
+  padding: 8px 12px; color: var(--muted); cursor: pointer; }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+.banner { background: var(--warn-bg); color: var(--warn-text); padding: 10px 16px; text-align: center; }
+.error { background: var(--warn-bg); color: var(--warn-text); padding: 12px; border-radius: 8px; }
+main.wrap { padding: 20px 16px 48px; }
+.controls { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; }
+.controls label { display: flex; flex-direction: column; font-size: .875rem; color: var(--muted); gap: 4px; }
+select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text); max-width: 100%; }
+.race-header { margin: 8px 0 12px; }
+.race-header h2 { margin: 0; font-size: 1.25rem; }
+.race-header p { margin: 2px 0 0; color: var(--muted); }
+
+.table-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: .925rem; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+th { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr { cursor: pointer; }
+tbody tr:hover, tbody tr[aria-selected="true"] { background: var(--accent-soft); }
+.small { display: block; font-size: .8rem; color: var(--muted); }
+.bar { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.bar span.fill { height: 10px; background: var(--accent); border-radius: 3px; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+.winner { font-weight: 700; }
+.hint, .muted { color: var(--muted); font-size: .875rem; }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
+.card h2 { margin-top: 0; font-size: 1.1rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.grid .card { margin-top: 0; }
+dl.metrics { display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; margin: 0; }
+dl.metrics dt { color: var(--muted); } dl.metrics dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.contrib { display: grid; grid-template-columns: minmax(120px, 2fr) 3fr auto; gap: 4px 12px; align-items: center; font-size: .875rem; }
+.contrib .track { position: relative; height: 12px; background: var(--bg); border-radius: 3px; }
+.contrib .track::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+.contrib .seg { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.contrib .seg.pos { background: var(--pos); } .contrib .seg.neg { background: var(--neg); }
+svg text { fill: var(--muted); font-size: 11px; }
+.prose { max-width: 760px; } .pipeline li { margin-bottom: 8px; }
+@media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 6px; } }

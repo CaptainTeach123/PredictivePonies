@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='utf-8'?>
+<entries track="SYN2" date="2026-06-28">
+  <race number="1" distance_furlongs="5.5" surface="dirt" condition="fast" class="claiming" purse="20000">
+    <starter program="1" post_position="1" horse_id="H0236" horse_name="Rapid Gambit" age="2" sex="G" weight_lbs="121" jockey_id="J010" jockey_name="M. Kowalski" trainer_id="T018" trainer_name="T. Brooks" morning_line="50-1" />
+    <starter program="2" post_position="2" horse_id="H0394" horse_name="Northern Jewel" age="4" sex="G" weight_lbs="121" jockey_id="J019" jockey_name="R. Turner" trainer_id="T009" trainer_name="S. Brooks" morning_line="1-1" />
+    <starter program="3" post_position="3" horse_id="H0355" horse_name="Clever Dynasty" age="2" sex="H" weight_lbs="120" jockey_id="J015" jockey_name="D. Price" trainer_id="T001" trainer_name="T. Jensen" morning_line="8-1" />
+    <starter program="4" post_position="4" horse_id="H0499" horse_name="Rapid Zephyr" age="5" sex="F" weight_lbs="123" jockey_id="J015" jockey_name="D. Price" trainer_id="T012" trainer_name="J. Rossi" morning_line="10-1" />
+    <starter program="5" post_position="5" horse_id="H0695" horse_name="Mighty Prospect" age="3" sex="F" weight_lbs="123" jockey_id="J016" jockey_name="M. Quinn" trainer_id="T005" trainer_name="D. Jensen" morning_line="3-1" />
+    <starter program="6" post_position="6" horse_id="H0749" horse_name="Distant Arrow" age="3" sex="G" weight_lbs="116" jockey_id="J011" jockey_name="J. Lopez" trainer_id="T000" trainer_name="J. Lopez" morning_line="50-1" />
+  </race>
+  <race number="2" distance_furlongs="9" surface="dirt" condition="fast" class="claiming" purse="25000">
+    <starter program="1" post_position="1" horse_id="H0739" horse_name="Electric Lantern" age="3" sex="C" weight_lbs="119" jockey_id="J016" jockey_name="M. Quinn" trainer_id="T001" trainer_name="T. Jensen" morning_line="6-1" />
+    <starter program="2" post_position="2" horse_id="H0725" horse_name="Lonesome Mirage" age="5" sex="C" weight_lbs="120" jockey_id="J019" jockey_name="R. Turner" trainer_id="T009" trainer_name="S. Brooks" morning_line="10-1" />
+    <starter program="3" post_position="3" horse_id="H0468" horse_name="Midnight Lantern" age="3" sex="F" weight_lbs="115" jockey_id="J008" jockey_name="R. Ito" trainer_id="T011" trainer_name="D. Young" morning_line="50-1" />
+    <starter program="4" post_position="4" horse_id="H0496" horse_name="Southern Outlaw" age="3" sex="M" weight_lbs="116" jockey_id="J004" jockey_name="M. Ellis" trainer_id="T013" trainer_name="C. Garcia" morning_line="50-1" />
+    <starter program="5" post_position="5" horse_id="H0280" horse_name="Southern Falcon" age="4" sex="C" weight_lbs="120" jockey_id="J006" jockey_name="M. Garcia" trainer_id="T015" trainer_name="T. Flores" morning_line="4-1" />
+    <starter program="6" post_position="6" horse_id="H0255" horse_name="Wild Arrow" age="3" sex="M" weight_lbs="123" jockey_id="J024" jockey_name="T. Brooks" trainer_id="T011" trainer_name="D. Young" morning_line="50-1" />
+    <starter program="7" post_position="7" horse_id="H0150" horse_name="Clever Harbor" age="3" sex="G" weight_lbs="119" jockey_id="J002" jockey_name="R. Castro" trainer_id="T005" trainer_name="D. Jensen" morning_line="50-1" />
+    <starter program="8" post_position="8" horse_id="H0173" horse_name="Iron Monarch" age="3" sex="G" weight_lbs="119" jockey_id="J005" jockey_name="A. Flores" trainer_id="T011" trainer_name="D. Young" morning_line="4-5" />
+    <starter program="9" post_position="9" horse_id="H0759" horse_name="Scarlet Cyclone" age="4" sex="G" weight_lbs="115" jockey_id="J007" jockey_name="R. Hughes" trainer_id="T018" trainer_name="T. Brooks" morning_line="50-1" />
+  </race>
+</entries>
