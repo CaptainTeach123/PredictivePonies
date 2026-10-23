@@ -7,7 +7,8 @@ from ponies import browser, config, pipeline
 
 def test_browser_matches_pipeline(tmp_path):
     pipeline.run(tmp_path)
-    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text())
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
     entry_file = sorted(config.ENTRIES_DIR.glob("*.xml"))[0]
     cards = json.loads(browser.predict_card(entry_file.read_text()))
 
@@ -24,7 +25,8 @@ def test_browser_matches_pipeline(tmp_path):
 
 def test_unknown_horse_treated_as_debut(tmp_path):
     pipeline.run(tmp_path)
-    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text())
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
     xml = """<entries track="TST" date="2030-01-01"><race number="1" distance_furlongs="6" surface="dirt" condition="fast">
       <starter program="1" horse_id="NEW-A" horse_name="A" morning_line="2-1"/>
       <starter program="2" horse_id="NEW-B" horse_name="B" morning_line="3-1"/></race></entries>"""

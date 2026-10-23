@@ -117,15 +117,16 @@ ${starters.join("\n")}
       setStatus("Loading numpy and pandas…");
       await py.loadPackage(["numpy", "pandas"]);
       setStatus("Loading model and race history…");
-      const [zip, historyCsv, modelJson] = await Promise.all([
+      const [zip, historyCsv, modelJson, figureJson] = await Promise.all([
         fetch("data/ponies.zip").then((r) => { if (!r.ok) throw new Error("data/ponies.zip missing — run the pipeline"); return r.arrayBuffer(); }),
         fetch("data/history.csv").then((r) => r.text()),
         fetch("data/model.json").then((r) => r.text()),
+        fetch("data/figure_model.json").then((r) => (r.ok ? r.text() : null)),
       ]);
       py.unpackArchive(zip, "zip", { extractDir: "/home/pyodide/app" });
       py.runPython("import sys; sys.path.insert(0, '/home/pyodide/app')");
       const browser = py.pyimport("ponies.browser");
-      browser.load_state(historyCsv, modelJson);
+      browser.load_state(historyCsv, modelJson, figureJson);
       return browser;
     })();
     enginePromise.catch(() => { enginePromise = null; });

@@ -36,9 +36,13 @@ Open the dashboard and go to **Enter a race**. Fill in the race details and runn
 
 > The repo ships with **synthetic** sample data so everything runs out of the box. The dashboard shows a banner while that data is in use.
 
-## The model, in one paragraph
+## The models
 
-Each runner gets a score that is a weighted sum of standardised features: recent speed figures, finishing percentile, shrunk career/jockey/trainer win rates, distance/surface/condition fit, layoff, class change, post position, weight and age. Win probability is the softmax of those scores **within the race** (a conditional logit, as in Bolton & Chapman 1986 and Benter 1994). Weights are fitted on older races and evaluated on the most recent 20%, which the model never sees during training. The benchmark is the betting market's implied probabilities. Explanations are exact per-feature contributions to a horse's score relative to the average rival.
+**Speed-figure model** (`ponies/figure_model.py`, currently used): predicts each horse's next speed figure from its own earlier starts (recent and best figures, layoff, distance and surface changes, class, weight, jockey). It then simulates the race 20,000 times, and a horse's win probability is the share of simulations it wins. Because it learns from single starts rather than complete races, it can train straight from past-performance files. A TrackMaster card is predicted by a model trained on that file's own past starts, in the browser.
+
+**Conditional logit** (`ponies/model.py`): scores each runner as a weighted sum of features and takes a softmax within the race (Bolton & Chapman 1986, Benter 1994). It needs complete past races to learn from.
+
+Both are trained on older races and tested on the most recent 20%. The page uses whichever has the lower log loss, and the benchmark is the betting market. Explanations show each feature's exact contribution relative to the average rival.
 
 ## Documentation map
 

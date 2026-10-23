@@ -103,7 +103,7 @@ def _race_attrs(rd: ET.Element) -> dict:
     }
 
 
-def _pp_row(p: ET.Element, hid: str, name: str) -> dict | None:
+def _pp_row(p: ET.Element, hid: str, name: str, foal_date: str = "") -> dict | None:
     """One past start. Lines with field size 0 aren't races (no finish, odds or
     figure) and are skipped. [A-25]"""
     field = _num(p, "fieldsize")
@@ -126,6 +126,7 @@ def _pp_row(p: ET.Element, hid: str, name: str) -> dict | None:
         "horse_id": hid, "horse_name": name,
         "post_position": _num(p, "postpositi"),
         "weight_lbs": _num(p, "weightcarr"),
+        "age": _age(foal_date, _t(p, "racedate")),
         "jockey_id": person_id("J", _t(p, "jockdisp")),
         "jockey_name": _t(p, "jockdisp") or None,
         "final_odds": f"{odds:.2f}" if odds else None,  # odds-to-one, e.g. 4.70
@@ -156,5 +157,6 @@ def parse_trackmaster(root: ET.Element) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "morning_line": _t(h, "morn_odds") or None,
                 "source": "entry",
             })
-            pps += [row for p in h.findall("ppdata") if (row := _pp_row(p, hid, name))]
+            pps += [row for p in h.findall("ppdata")
+                    if (row := _pp_row(p, hid, name, _t(h, "foal_date")))]
     return _to_frame(entries), _to_frame(pps)

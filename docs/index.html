@@ -12,7 +12,7 @@
   <header class="site-header">
     <div class="wrap">
       <h1>Predictive Ponies</h1>
-      <p class="tagline">XML race data → Python features → conditional-logit model → win probabilities</p>
+      <p class="tagline">XML race data → Python features → machine-learning model → win probabilities</p>
       <nav aria-label="Sections">
         <button type="button" class="tab" aria-selected="true" data-tab="races">Races</button>
         <button type="button" class="tab" aria-selected="false" data-tab="enter">Enter a race</button>
@@ -75,7 +75,8 @@
     <!-- ===== Model ===== -->
     <section id="tab-model" class="panel" hidden>
       <div class="grid">
-        <div class="card"><h2>Backtest summary</h2><div id="metrics"></div></div>
+        <div class="card"><h2>Backtest summary (conditional logit)</h2><div id="metrics"></div></div>
+        <div class="card"><h2>Model comparison</h2><div id="fig-metrics"><p class="muted">Not available.</p></div></div>
         <div class="card"><h2>Calibration</h2><div id="calibration"></div>
           <p class="hint">Points on the diagonal mean predicted probabilities match how often horses actually won.</p></div>
       </div>
@@ -148,7 +149,7 @@
         <ol class="pipeline">
           <li><strong>Horse racing XML files</strong> — race entries, past performances and historical results (<code>ponies/xml_io.py</code>).</li>
           <li><strong>Python data processing</strong> — point-in-time features: speed figures, recent form, distance/surface/condition fit, jockey and trainer win rates (<code>ponies/features.py</code>).</li>
-          <li><strong>Machine-learning model</strong> — a conditional logit (softmax within each race) trained on past races and tested on later races it never saw (<code>ponies/model.py</code>, <code>ponies/evaluate.py</code>).</li>
+          <li><strong>Machine-learning model</strong> — two models, each tested on later races it never saw (<code>ponies/evaluate.py</code>). The <em>speed-figure model</em> predicts each horse's next speed figure from its own past starts and simulates the race (<code>ponies/figure_model.py</code>). The <em>conditional logit</em> learns from complete past races (<code>ponies/model.py</code>). Whichever backtests better is used.</li>
           <li><strong>Race prediction dashboard</strong> — this page, reading JSON from <code>docs/data/</code> (<code>ponies/pipeline.py</code>).
             The <em>Enter a race</em> tab runs the same Python code in your browser with
             <a href="https://pyodide.org">Pyodide</a> (<code>ponies/browser.py</code>).</li>

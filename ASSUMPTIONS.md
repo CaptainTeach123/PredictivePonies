@@ -36,6 +36,11 @@ the before/after backtest numbers in the *Change log* at the bottom.
 | A-23 | TrackMaster IDs: horses = name + foaling date; jockeys and trainers = display name | `trackmaster.horse_id`, `trackmaster.person_id` | – | The file has no horse key, and its PP lines have no jockey key. Two jockeys with the same display name would be merged. |
 | A-24 | TrackMaster units: distances are hundredths of a furlong; age = race year − foaling year | `trackmaster._furlongs`, `trackmaster._age` | – | Checked against `dist_disp` ("1M" = 800.0). Ages follow the North American 1 January birthday rule. |
 | A-25 | TrackMaster PP lines with field size 0 or finish 0 are skipped, and speed figure 0 means missing | `trackmaster._pp_row` | – | These lines aren't races: they have no finish, odds or figure. |
+| A-26 | Speed-figure model = **ridge regression** (penalty **0.05** on standardised features) predicting a start's speed figure from the horse's earlier starts | `figure_model.SpeedFigureModel.fit` | `FIGURE_RIDGE` | Linear and fast enough to train in the browser. Training examples are single starts, so it needs no complete fields. |
+| A-27 | "Sprint" = under **7.5 furlongs**; a sprint↔route switch is a feature | `figure_model._row_features` | `SPRINT_MAX_FURLONGS` | The US convention is roughly sprints < 1 mile. |
+| A-28 | Predicted-figure uncertainty σ = residual standard deviation for horses with **0, 1–2, 3–5 or 6+** prior starts | `figure_model._bucket`, `SpeedFigureModel.fit` | `FIGURE_SIGMA_BUCKETS` | Lightly raced horses are less predictable. Buckets with fewer than 10 examples use the overall σ. |
+| A-29 | Win probability = share of **20,000** simulated races won, each horse's figure drawn from N(predicted, σ), with fixed seed **0** | `figure_model.SpeedFigureModel.predict_proba` | `SIMULATIONS`, `SIMULATION_SEED` | Treats horses as independent, with no pace interaction. The fixed seed makes browser and pipeline results identical. |
+| A-30 | Model per card: TrackMaster cards → speed-figure model trained **only on that source's PP lines** (in the browser: the uploaded file's); other cards → whichever model has the lower backtest log loss | `pipeline.run`, `browser.predict_card` | `WIN_MODEL` | Figure scales never mix between sources. A TrackMaster file with fewer than 20 figured starts falls back to the exported model. |
 
 ## Known limitations / ideas for whoever improves this next
 
@@ -49,3 +54,5 @@ the before/after backtest numbers in the *Change log* at the bottom.
 | Date | Change | Test log loss (model / market) | Notes |
 |------|--------|-------------------------------|-------|
 | 2026-10-23 | Initial model | 1.602 / 1.402 (synthetic data) | Baseline. |
+| 2026-10-24 | [A-07] imputation → race-field median | unchanged (1.602) | Fixed debut horses being over-rated on TrackMaster data. |
+| 2026-10-24 | Added speed-figure model [A-26]–[A-30]; it is now used for predictions | Speed-figure model 1.564 vs conditional logit 1.602 (market 1.402), synthetic data | On the real Finger Lakes TrackMaster file, figure error ±9.5, the same as "average of last 3" (±9.5) and better than "last figure" (±11.3). That is 1,045 starts, too few to pull ahead. |

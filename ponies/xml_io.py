@@ -139,8 +139,9 @@ def entries_from_text(xml_text: str) -> pd.DataFrame:
 
 # Columns the feature builder needs from history (features._index_history).
 HISTORY_COLUMNS = [
-    "date", "horse_id", "jockey_id", "trainer_id", "distance_furlongs", "surface",
+    "race_id", "date", "horse_id", "jockey_id", "trainer_id", "distance_furlongs", "surface",
     "condition", "purse", "field_size", "finish_position", "speed_figure",
+    "weight_lbs", "beaten_lengths", "age",
 ]
 
 

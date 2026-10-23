@@ -7,11 +7,12 @@
   const pct = (p, d = 1) => (p == null ? "–" : (100 * p).toFixed(d) + "%");
   const signed = (x, d = 2) => (x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(d));
 
-  let preds, evaluation, model;
+  let preds, evaluation, model, figModel = null;
   try {
     [preds, evaluation, model] = await Promise.all(
       ["predictions", "evaluation", "model"].map((n) =>
         fetch(`data/${n}.json`).then((r) => { if (!r.ok) throw new Error(n); return r.json(); })));
+    figModel = await fetch("data/figure_model.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
   } catch (e) {
     const el = $("#load-error");
     el.hidden = false;
@@ -21,6 +22,16 @@
   if (preds.synthetic_data) $("#synthetic-banner").hidden = false;
   $("#generated-at").textContent = "Data generated " + preds.generated_at;
   const desc = model.feature_descriptions;
+  const figDesc = (figModel && figModel.feature_descriptions) || {};
+  const isFig = (race) => race.model === "speed_figure";
+  const descFor = (race, f) => (isFig(race) ? figDesc[f] : desc[f]) || desc[f] || figDesc[f] || "";
+  const modelLine = (race) => {
+    if (!isFig(race)) return "Model: conditional logit (learned from complete past races).";
+    const info = race.model_info || {}, h = info.holdout;
+    return `Model: speed-figure model, trained on ${info.train_starts ?? "?"} past starts` +
+      (h && h.model_on_horses_with_form ? `. On unseen later starts its figure error was ±${h.model_on_horses_with_form.mae}
+        vs ±${h.baseline_avg_last3.mae} for "average of last 3"` : "") + ".";
+  };
 
   // ---------- tabs ----------
   function selectTab(name) {
@@ -53,7 +64,8 @@
     document.querySelectorAll(".result-col").forEach((c) => (c.hidden = !done));
     $("#race-header").innerHTML = `<h2>${esc(race.track)} · Race ${race.race_number} · ${esc(race.date)}</h2>
       <p>${[`${race.distance_furlongs}f ${esc(race.surface)}${race.condition ? ` (${esc(race.condition)})` : ""}`, esc(race.race_class),
-        race.purse ? `purse $${race.purse.toLocaleString()}` : "", `${race.field_size} runners`].filter(Boolean).join(" · ")}</p>`;
+        race.purse ? `purse $${race.purse.toLocaleString()}` : "", `${race.field_size} runners`].filter(Boolean).join(" · ")}</p>
+      <p class="hint">${modelLine(race)}</p>`;
     const maxP = Math.max(...race.runners.map((r) => r.model_prob));
     tbody.innerHTML = race.runners.map((r, i) => `
       <tr tabindex="0" data-i="${i}" aria-selected="false" class="${r.finish_position === 1 ? "winner" : ""}">
@@ -86,14 +98,19 @@
       const w = (50 * Math.abs(v)) / maxAbs;
       const left = v >= 0 ? 50 : 50 - w;
       const val = r.features[f];
-      return `<div title="${esc(desc[f])}">${esc(f)}<span class="small">value: ${val == null ? "missing → imputed" : val}</span></div>
+      return `<div title="${esc(descFor(race, f))}">${esc(f)}<span class="small">value: ${val == null ? "missing → imputed" : val}</span></div>
         <div class="track" role="img" aria-label="${esc(f)} contribution ${signed(v)}">
           <span class="seg ${v >= 0 ? "pos" : "neg"}" style="left:${left}%;width:${w}%"></span></div>
         <div class="${v >= 0 ? "pos" : "neg"}">${signed(v)}</div>`;
     }).join("");
-    $("#explain").innerHTML = `<h2>Why the model rates ${esc(r.horse)} at ${pct(r.model_prob)}</h2>
-      <p class="hint">Contributions to the horse's score compared with the average rival in this race (log-odds units).
-      Green pushes the win chance up, red pushes it down. Hover a feature name for its definition.</p>
+    const intro = isFig(race)
+      ? `<p><strong>Expected speed figure ${r.pred_fig?.toFixed(0) ?? "–"} ± ${r.fig_sigma?.toFixed(0) ?? "–"}.</strong>
+         Win chance is the share of 20,000 simulated races this horse wins.</p>
+         <p class="hint">Contributions to the expected figure compared with the average rival in this race (figure points).
+         Green raises it, red lowers it. Hover a feature name for its definition.</p>`
+      : `<p class="hint">Contributions to the horse's score compared with the average rival in this race (log-odds units).
+         Green pushes the win chance up, red pushes it down. Hover a feature name for its definition.</p>`;
+    $("#explain").innerHTML = `<h2>Why the model rates ${esc(r.horse)} at ${pct(r.model_prob)}</h2>${intro}
       <div class="contrib">${rows}</div>
       <p class="hint">Market check: morning line ${esc(r.morning_line ?? "–")} implies ${pct(r.ml_implied_prob)}${r.final_odds ? `; final odds ${esc(r.final_odds)} implied ${pct(r.final_implied_prob)}` : ""}.</p>`;
   }
@@ -133,6 +150,24 @@
     <dt>ROI betting model top pick</dt><dd>${roi(bt.model_top_pick)}</dd>
     <dt>ROI value bets (edge &gt; ${pct(bt.value_bets.edge_threshold, 0)})</dt><dd>${roi(bt.value_bets)}</dd>
   </dl><p class="hint">Lower log loss is better. Beating the market's log loss is the real bar.</p>`;
+
+  const sf = ev.speed_figure_model;
+  if (sf) {
+    const rb = sf.race_backtest, fg = sf.figures;
+    const name = { speed_figure: "speed-figure model", conditional_logit: "conditional logit" };
+    $("#fig-metrics").innerHTML = `<dl class="metrics">
+      <dt>Used for predictions</dt><dd>${esc(name[ev.chosen_model] ?? ev.chosen_model)}</dd>
+      <dt>Log loss: conditional logit</dt><dd>${ll.model}</dd>
+      <dt>Log loss: speed-figure model</dt><dd>${rb.log_loss.model}</dd>
+      <dt>Top pick won: speed-figure model</dt><dd>${pct(rb.top_pick_win_rate.model)}</dd>
+      <dt>Figure error (unseen starts)</dt><dd>±${fg.model?.mae ?? "–"}</dd>
+      <dt>…"average of last 3" baseline</dt><dd>±${fg.baseline_avg_last3?.mae ?? "–"}</dd>
+      <dt>…"last figure" baseline</dt><dd>±${fg.baseline_last_figure?.mae ?? "–"}</dd>
+      <dt>Training starts</dt><dd>${sf.train_starts}</dd>
+    </dl><p class="hint">The speed-figure model predicts each horse's next figure from its own past starts, then simulates the race.
+      It needs no complete past fields, so it can learn from past-performance files alone. TrackMaster cards always use it,
+      trained on that file's own starts.</p>`;
+  }
 
   // calibration scatter (inline SVG)
   const S = 260, pad = 40, sx = (p) => pad + p * (S - 2 * pad), sy = (p) => S - pad - p * (S - 2 * pad);

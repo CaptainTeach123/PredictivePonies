@@ -88,3 +88,30 @@ FLAT_STAKE = 1.0
 
 # [A-15] Calibration chart groups predictions into this many probability bins.
 CALIBRATION_BINS = 10
+
+# --------------------------------------------------------------------------
+# Speed-figure model (ponies/figure_model.py)
+# --------------------------------------------------------------------------
+# [A-26] Ridge penalty for the next-speed-figure regression: the fit minimises
+# mean squared error + FIGURE_RIDGE * sum(w^2) on standardised features.
+FIGURE_RIDGE = 0.05
+
+# [A-27] A race is a "sprint" below this distance (furlongs); switching between
+# sprint and route is a feature.
+SPRINT_MAX_FURLONGS = 7.5
+
+# [A-28] Uncertainty of a horse's predicted figure is the residual standard
+# deviation within its experience bucket: these are the upper bounds of prior
+# starts for each bucket (0 starts, 1-2, 3-5, 6+).
+FIGURE_SIGMA_BUCKETS = (0, 2, 5)
+
+# [A-29] Win probabilities = share of simulated races each horse wins, each
+# horse running at N(predicted figure, sigma). Fixed seed => reproducible.
+SIMULATIONS = 20000
+SIMULATION_SEED = 0
+
+# [A-30] Which model predicts a card. "auto": TrackMaster cards use the
+# speed-figure model trained on TrackMaster PP lines only (so figure scales
+# never mix); every other card uses whichever model has the lower backtest
+# log loss on the held-out races. Or force "speed_figure" / "conditional_logit".
+WIN_MODEL = "auto"

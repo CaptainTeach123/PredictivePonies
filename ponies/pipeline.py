@@ -30,6 +30,7 @@ import pandas as pd
 from . import config, odds
 from .evaluate import evaluate, market_probabilities
 from .features import FEATURES, FEATURE_NAMES, build_features
+from .figure_model import build_figure_features, figure_metrics, fit_with_holdout
 from .model import ConditionalLogit
 from .trackmaster import SOURCE as TRACKMASTER, parse_trackmaster
 from .xml_io import combine_history, history_to_csv, load_directory, load_history
@@ -54,10 +55,18 @@ def _clean(v):
     return v
 
 
-def race_cards(df: pd.DataFrame, model: ConditionalLogit, kind: str) -> list[dict]:
-    """Package predictions per race for the dashboard."""
+def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = None) -> list[dict]:
+    """Package predictions per race for the dashboard.
+
+    ``model`` is a ConditionalLogit (df from features.build_features) or a
+    SpeedFigureModel (df from figure_model.build_figure_features).
+    """
     df = df.reset_index(drop=True)
+    names = model.feature_names
+    model_name = getattr(model, "name", "conditional_logit")
     df["model_prob"] = model.predict_proba(df)
+    if hasattr(model, "predict_fig"):
+        df["pred_fig"], df["fig_sigma"] = model.predict_fig(df)
     contrib = model.contributions(df)
     ml_col = "morning_line"
     df["ml_implied_prob"] = market_probabilities(df, ml_col)
@@ -91,8 +100,9 @@ def race_cards(df: pd.DataFrame, model: ConditionalLogit, kind: str) -> list[dic
                 "no_history": not r["has_history"],
                 "value_flag": bool(r["edge_vs_ml"] > config.VALUE_EDGE_THRESHOLD and r["has_history"]),
                 "finish_position": _clean(r["finish_position"]),
-                "features": {f: _clean(r[f]) for f in FEATURE_NAMES},
-                "contributions": {f: _clean(c[f]) for f in FEATURE_NAMES},
+                "pred_fig": _clean(r.get("pred_fig")), "fig_sigma": _clean(r.get("fig_sigma")),
+                "features": {f: _clean(r[f]) for f in names},
+                "contributions": {f: _clean(c[f]) for f in names},
             })
         cards.append({
             "race_id": race_id, "kind": kind,
@@ -102,6 +112,8 @@ def race_cards(df: pd.DataFrame, model: ConditionalLogit, kind: str) -> list[dic
             "surface": _clean(first["surface"]), "condition": _clean(first["condition"]),
             "race_class": _clean(first["race_class"]), "purse": _clean(first["purse"]),
             "field_size": len(g), "runners": runners,
+            "model": model_name, "units": getattr(model, "units", "log-odds"),
+            "model_info": model_info,
         })
     return cards
 
@@ -139,10 +151,12 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
     results = history[history["source"] == "result"]
     entries = load_directory(config.ENTRIES_DIR, "entries") if config.ENTRIES_DIR.exists() else pd.DataFrame()
     # TrackMaster cards: their runners become entries, their PP lines history.
+    tm_entries = pd.DataFrame()
     for path in sorted(config.TRACKMASTER_DIR.glob("*.xml")) if config.TRACKMASTER_DIR.exists() else []:
-        tm_entries, tm_pps = parse_trackmaster(ET.parse(path).getroot())
-        entries = pd.concat([entries, tm_entries], ignore_index=True)
+        card, tm_pps = parse_trackmaster(ET.parse(path).getroot())
+        tm_entries = pd.concat([tm_entries, card], ignore_index=True)
         history = combine_history(history, tm_pps)
+    public = history[history["source"] != TRACKMASTER]
 
     # Stage 2 - features (training rows are results with a known winner)
     feats = build_features(history, results)
@@ -159,26 +173,54 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
     # [A-19] Refit on ALL history for live predictions so the latest form counts.
     live_model = ConditionalLogit(FEATURE_NAMES).fit(feats)
 
-    # Stage 4 - dashboard data
+    # Speed-figure model on the public history: same race backtest as above
+    # (trained only on starts before the test period) + figure accuracy.
+    test_start = test["date"].min()
+    fig_bt_model, _ = fit_with_holdout(public[public["date"] < test_start])
+    test_fig = build_figure_features(public, results[results["race_id"].isin(set(test["race_id"]))])
+    fig_eval = evaluate(test_fig, fig_bt_model.predict_proba(test_fig))
+    fig_live, fig_info = fit_with_holdout(public)
+    metrics["speed_figure_model"] = {
+        "race_backtest": {k: fig_eval[k] for k in ("races", "log_loss", "brier", "top_pick_win_rate",
+                                                     "betting_backtest", "calibration")},
+        "figures": figure_metrics(fig_bt_model, test_fig), "train_starts": fig_info["train_starts"],
+    }
+
+    # Stage 4 - dashboard data. [A-30] picks the model per card.
+    chosen = config.WIN_MODEL
+    if chosen == "auto":
+        chosen = ("speed_figure" if fig_eval["log_loss"]["model"] < metrics["log_loss"]["model"]
+                  else "conditional_logit")
+    metrics["chosen_model"] = chosen
+    use_fig = chosen == "speed_figure"
     cards = []
     if len(entries):
-        cards += race_cards(build_features(history, entries), live_model, "upcoming")
-    cards += race_cards(test, model, "backtest")
+        cards += (race_cards(build_figure_features(public, entries), fig_live, "upcoming", fig_info)
+                  if use_fig else race_cards(build_features(history, entries), live_model, "upcoming"))
+    if len(tm_entries):
+        tm_hist = history[history["source"] == TRACKMASTER]
+        if config.WIN_MODEL == "conditional_logit":
+            cards += race_cards(build_features(history, tm_entries), live_model, "upcoming")
+        else:
+            tm_model, tm_info = fit_with_holdout(tm_hist)
+            cards += race_cards(build_figure_features(tm_hist, tm_entries), tm_model, "upcoming", tm_info)
+    cards += (race_cards(test_fig, fig_bt_model, "backtest") if use_fig
+              else race_cards(test, model, "backtest"))
 
     synthetic = any(p.name.startswith("SYNTHETIC") for p in config.RAW_DIR.rglob("*.xml"))
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "synthetic_data": synthetic,
     }
-    model_doc = {**meta, **live_model.to_dict(),
+    model_doc = {**meta, **live_model.to_dict(), "chosen_model": chosen,
                  "backtest_weights": model.weights.tolist(),
                  "feature_descriptions": FEATURES}
     (out_dir / "model.json").write_text(json.dumps(model_doc, indent=2))
+    (out_dir / "figure_model.json").write_text(json.dumps({**meta, **fig_live.to_dict(), **fig_info}, indent=2))
     (out_dir / "evaluation.json").write_text(json.dumps({**meta, **metrics}, indent=2))
     (out_dir / "predictions.json").write_text(json.dumps({**meta, "races": cards}, allow_nan=False))
 
     # In-browser predictor inputs. Licensed TrackMaster PP lines are not published.
-    public = history[history["source"] != TRACKMASTER]
     history_to_csv(public, out_dir / "history.csv")
     (out_dir / "roster.json").write_text(json.dumps(build_roster(public)))
     package_source(out_dir / "ponies.zip")

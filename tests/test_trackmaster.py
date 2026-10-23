@@ -45,9 +45,32 @@ def test_parse_units_and_skips():
 
 def test_browser_predicts_trackmaster_card(tmp_path):
     pipeline.run(tmp_path)
-    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text())
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
     (card,) = json.loads(browser.predict_card(CARD))
     runners = {r["horse"]: r for r in card["runners"]}
     assert runners["Fast One"]["model_prob"] > runners["Slow One"]["model_prob"]
     assert runners["Debut"]["no_history"] and not runners["Fast One"]["no_history"]
     assert abs(sum(r["model_prob"] for r in card["runners"]) - 1) < 1e-3
+
+
+def _big_card(n_lines=12):
+    """Two horses with long histories: 'Steady' runs ~80, 'Plodder' ~55."""
+    def lines(base):
+        return [PP.format(date=f"2026{m:02d}{d:02d}", rn=r, cond="FT", field=8, odds="3.00",
+                          fin=1 if base > 70 else 6, lb=0 if base > 70 else 800, fig=base + (i % 3) - 1)
+                for i, (m, d, r) in enumerate((m, d, r) for m in range(1, 10) for d, r in ((5, 2), (20, 4)))][:n_lines]
+    return f"""<?xml version="1.0"?><data><racedata><race>1</race><distance>600.0</distance><dist_unit>F</dist_unit>
+      <surface>D</surface><purse>20000</purse><track>FL</track><race_date>20261020</race_date><stk_clm_md>CLM</stk_clm_md>
+      {horse("STEADY", 1, "2/1", lines(80))}{horse("PLODDER", 2, "3/1", lines(55))}</racedata></data>"""
+
+
+def test_trackmaster_card_trains_speed_figure_model_in_browser(tmp_path):
+    pipeline.run(tmp_path)
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
+    (card,) = json.loads(browser.predict_card(_big_card()))
+    assert card["model"] == "speed_figure" and card["model_info"]["train_starts"] == 24
+    r = {x["horse"]: x for x in card["runners"]}
+    assert r["Steady"]["pred_fig"] > r["Plodder"]["pred_fig"] + 10
+    assert r["Steady"]["model_prob"] > 0.8

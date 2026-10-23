@@ -166,6 +166,27 @@ def _runner_features(row, prior: list[dict], jockeys, trainers) -> dict:
     return f
 
 
+def id_columns(row) -> dict:
+    """Identifying/display columns carried alongside features (used by
+    pipeline.race_cards for every model)."""
+    return {
+        "race_id": row.race_id, "date": row.date, "track": row.track,
+        "race_number": row.race_number, "horse_id": row.horse_id,
+        "horse_name": row.horse_name, "program": row.program,
+        "post_position": row.post_position,
+        "jockey_name": row.jockey_name, "trainer_name": row.trainer_name,
+        "morning_line": row.morning_line, "final_odds": row.final_odds,
+        "finish_position": row.finish_position,
+        "distance_furlongs": row.distance_furlongs, "surface": row.surface,
+        "condition": row.condition, "race_class": row.race_class,
+        "purse": row.purse, "field_size": row.field_size,
+    }
+
+
+def won_label(row) -> float:
+    return math.nan if math.isnan(row.finish_position) else float(row.finish_position == 1)
+
+
 def build_features(history: pd.DataFrame, targets: pd.DataFrame) -> pd.DataFrame:
     """Compute features for every row of ``targets`` using ``history``.
 
@@ -179,21 +200,7 @@ def build_features(history: pd.DataFrame, targets: pd.DataFrame) -> pd.DataFrame
         starts = horses.get(row.horse_id, [])
         cut = bisect.bisect_left([s["date"] for s in starts], row.date)
         feats = _runner_features(row, starts[:cut], jockeys, trainers)
-        won = (math.nan if math.isnan(row.finish_position)
-               else float(row.finish_position == 1))
-        out.append({
-            "race_id": row.race_id, "date": row.date, "track": row.track,
-            "race_number": row.race_number, "horse_id": row.horse_id,
-            "horse_name": row.horse_name, "program": row.program,
-            "post_position": row.post_position,
-            "jockey_name": row.jockey_name, "trainer_name": row.trainer_name,
-            "morning_line": row.morning_line, "final_odds": row.final_odds,
-            "finish_position": row.finish_position,
-            "distance_furlongs": row.distance_furlongs, "surface": row.surface,
-            "condition": row.condition, "race_class": row.race_class,
-            "purse": row.purse, "field_size": row.field_size,
-            **feats, "won": won,
-        })
+        out.append({**id_columns(row), **feats, "won": won_label(row)})
     df = pd.DataFrame(out)
     if len(df):
         df["weight_vs_field"] = df["weight_vs_field"] - df.groupby("race_id")["weight_vs_field"].transform("mean")

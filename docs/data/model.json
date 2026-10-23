@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T21:42:53+00:00",
+  "generated_at": "2026-10-23T22:18:08+00:00",
   "synthetic_data": true,
   "type": "conditional_logit",
   "feature_names": [
@@ -99,6 +99,7 @@
   ],
   "final_train_loss": 1.613148836105033,
   "iterations": 197,
+  "chosen_model": "speed_figure",
   "backtest_weights": [
     0.12829930349297378,
     0.7282979559039648,
