@@ -60,8 +60,13 @@ class ConditionalLogit:
     def _prepare(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
         X = df[self.feature_names].to_numpy(dtype=float)
         if fit:
-            # [A-07] impute with training mean
             self.impute_values = np.nan_to_num(np.nanmean(X, axis=0))
+        # [A-07] impute with the median of the runner's own race field, so a
+        # missing value is "average for this race" whatever the figure scale;
+        # fall back to the training mean when the whole field is missing it.
+        field_median = (pd.DataFrame(X).groupby(df["race_id"].to_numpy())
+                        .transform("median").to_numpy())
+        X = np.where(np.isnan(X), field_median, X)
         X = np.where(np.isnan(X), self.impute_values, X)
         if fit:
             self.means = X.mean(axis=0)

@@ -22,6 +22,7 @@ data/raw/*.xml ──► ponies/xml_io.py ──► ponies/features.py ──►
 | 4. Export | `ponies/pipeline.py` | `run`, `race_cards` | Writes the JSON the dashboard reads. |
 | Dashboard | `docs/index.html`, `docs/app.js`, `docs/style.css` | – | Static page with no build step, deployed by `.github/workflows/pages.yml`. |
 | In-browser predictor | `ponies/browser.py`, `docs/predict.js` | `load_state`, `predict_card` | The "Enter a race" tab turns the form (or an uploaded XML file) into entries XML, then runs **this same Python package** in the browser via Pyodide, loaded from `docs/data/ponies.zip` together with `history.csv` and `model.json`. Nothing is retrained in the browser. |
+| TrackMaster | `ponies/trackmaster.py` | `parse_trackmaster`, `is_trackmaster` | Reads TrackMaster Plus XML into entries plus past-performance history. Used by `pipeline.run` (from `data/raw/trackmaster/`, git-ignored) and by `browser.predict_card` (file upload). Licensed: never commit these files or publish their PP lines. |
 | Config | `ponies/config.py` | – | **Every tunable number lives here**, tagged with an assumption ID. |
 
 ## Assumptions

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,8 @@ from . import config, odds
 from .evaluate import evaluate, market_probabilities
 from .features import FEATURES, FEATURE_NAMES, build_features
 from .model import ConditionalLogit
-from .xml_io import history_to_csv, load_directory, load_history
+from .trackmaster import SOURCE as TRACKMASTER, parse_trackmaster
+from .xml_io import combine_history, history_to_csv, load_directory, load_history
 
 
 def chronological_split(feats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -136,6 +138,11 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
     history = load_history(config.RESULTS_DIR, config.PP_DIR)
     results = history[history["source"] == "result"]
     entries = load_directory(config.ENTRIES_DIR, "entries") if config.ENTRIES_DIR.exists() else pd.DataFrame()
+    # TrackMaster cards: their runners become entries, their PP lines history.
+    for path in sorted(config.TRACKMASTER_DIR.glob("*.xml")) if config.TRACKMASTER_DIR.exists() else []:
+        tm_entries, tm_pps = parse_trackmaster(ET.parse(path).getroot())
+        entries = pd.concat([entries, tm_entries], ignore_index=True)
+        history = combine_history(history, tm_pps)
 
     # Stage 2 - features (training rows are results with a known winner)
     feats = build_features(history, results)
@@ -170,9 +177,10 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
     (out_dir / "evaluation.json").write_text(json.dumps({**meta, **metrics}, indent=2))
     (out_dir / "predictions.json").write_text(json.dumps({**meta, "races": cards}, allow_nan=False))
 
-    # In-browser predictor inputs
-    history_to_csv(history, out_dir / "history.csv")
-    (out_dir / "roster.json").write_text(json.dumps(build_roster(history)))
+    # In-browser predictor inputs. Licensed TrackMaster PP lines are not published.
+    public = history[history["source"] != TRACKMASTER]
+    history_to_csv(public, out_dir / "history.csv")
+    (out_dir / "roster.json").write_text(json.dumps(build_roster(public)))
     package_source(out_dir / "ponies.zip")
     return metrics
 

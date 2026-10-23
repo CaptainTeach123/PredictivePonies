@@ -26,6 +26,8 @@ python -m http.server -d docs 8000   # open http://localhost:8000
 
 Open the dashboard and go to **Enter a race**. Fill in the race details and runners, or load an entries XML file, then press **Predict race**. The model runs in your browser with [Pyodide](https://pyodide.org). The first run downloads about 15 MB, which is cached after that. Use **Download as XML** to save the card so it can be added to `data/raw/entries/`.
 
+**TrackMaster Plus XML** files (US cards with full past performances) can be loaded on the same tab and get real form-based predictions. See [DATA_SCHEMA.md](DATA_SCHEMA.md#trackmaster-plus-xml-supported-directly).
+
 ## Using real race data
 
 1. Put XML files into `data/raw/results/`, `data/raw/past_performances/` and `data/raw/entries/`. The layout is in [DATA_SCHEMA.md](DATA_SCHEMA.md).

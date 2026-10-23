@@ -197,3 +197,12 @@ def load_history(results_dir: Path, pp_dir: Path) -> pd.DataFrame:
     frames = [f for f in (results, pps) if len(f)]
     history = pd.concat(frames, ignore_index=True) if frames else _to_frame([])
     return history.sort_values(["date", "race_id", "post_position"]).reset_index(drop=True)
+
+
+def combine_history(history: pd.DataFrame, extra: pd.DataFrame) -> pd.DataFrame:
+    """Add PP lines not already in history (same rule as [A-20])."""
+    if extra.empty:
+        return history
+    known = set(zip(history["race_id"], history["horse_id"])) if "race_id" in history else set()
+    keep = [(r, h) not in known for r, h in zip(extra["race_id"], extra["horse_id"])]
+    return pd.concat([history, extra[keep]], ignore_index=True)

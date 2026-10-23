@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T21:18:08+00:00",
+  "generated_at": "2026-10-23T21:42:53+00:00",
   "synthetic_data": true,
   "races": 128,
   "runners": 1158,
@@ -38,7 +38,7 @@
     {
       "bin_low": 0.0,
       "bin_high": 0.1,
-      "mean_predicted": 0.03817354451860039,
+      "mean_predicted": 0.038173544518600375,
       "observed_win_rate": 0.03483870967741935,
       "count": 775
     },
@@ -59,21 +59,21 @@
     {
       "bin_low": 0.30000000000000004,
       "bin_high": 0.4,
-      "mean_predicted": 0.34154400688493225,
+      "mean_predicted": 0.34154400688493236,
       "observed_win_rate": 0.2222222222222222,
       "count": 45
     },
     {
       "bin_low": 0.4,
       "bin_high": 0.5,
-      "mean_predicted": 0.4434323759406358,
+      "mean_predicted": 0.4434323759406359,
       "observed_win_rate": 0.4375,
       "count": 32
     },
     {
       "bin_low": 0.5,
       "bin_high": 0.6000000000000001,
-      "mean_predicted": 0.5446220348809475,
+      "mean_predicted": 0.5446220348809477,
       "observed_win_rate": 0.5294117647058824,
       "count": 17
     },
@@ -87,14 +87,14 @@
     {
       "bin_low": 0.7000000000000001,
       "bin_high": 0.8,
-      "mean_predicted": 0.7218980725817716,
+      "mean_predicted": 0.7218980725817717,
       "observed_win_rate": 1.0,
       "count": 5
     },
     {
       "bin_low": 0.8,
       "bin_high": 0.9,
-      "mean_predicted": 0.8372711299796821,
+      "mean_predicted": 0.8372711299796823,
       "observed_win_rate": 0.6666666666666666,
       "count": 6
     }

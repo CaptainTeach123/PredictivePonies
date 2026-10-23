@@ -52,7 +52,7 @@
     const done = race.kind === "backtest";
     document.querySelectorAll(".result-col").forEach((c) => (c.hidden = !done));
     $("#race-header").innerHTML = `<h2>${esc(race.track)} · Race ${race.race_number} · ${esc(race.date)}</h2>
-      <p>${[`${race.distance_furlongs}f ${esc(race.surface)} (${esc(race.condition)})`, esc(race.race_class),
+      <p>${[`${race.distance_furlongs}f ${esc(race.surface)}${race.condition ? ` (${esc(race.condition)})` : ""}`, esc(race.race_class),
         race.purse ? `purse $${race.purse.toLocaleString()}` : "", `${race.field_size} runners`].filter(Boolean).join(" · ")}</p>`;
     const maxP = Math.max(...race.runners.map((r) => r.model_prob));
     tbody.innerHTML = race.runners.map((r, i) => `

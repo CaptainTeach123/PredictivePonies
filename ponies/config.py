@@ -16,6 +16,7 @@ RAW_DIR = ROOT / "data" / "raw"
 RESULTS_DIR = RAW_DIR / "results"            # historical result charts (*.xml)
 PP_DIR = RAW_DIR / "past_performances"       # past-performance files (*.xml)
 ENTRIES_DIR = RAW_DIR / "entries"            # upcoming race cards (*.xml)
+TRACKMASTER_DIR = RAW_DIR / "trackmaster"    # TrackMaster Plus XML (licensed, git-ignored)
 DASHBOARD_DATA_DIR = ROOT / "docs" / "data"  # JSON consumed by the dashboard
 
 # --------------------------------------------------------------------------
@@ -44,10 +45,11 @@ WET_CONDITIONS = {"sloppy", "muddy", "wet fast", "heavy", "soft", "yielding", "g
 # isn't treated as wildly different from a 1-year layoff.
 MAX_LAYOFF_DAYS = 365
 
-# [A-07] Missing history (e.g. first-time starters) is imputed with the
-# training-set mean of that feature, and a ``has_history`` flag lets the model
-# learn a separate debut penalty/bonus.
-IMPUTE_STRATEGY = "train_mean"
+# [A-07] Missing features (e.g. first-time starters) are imputed with the
+# median of the runner's own race field (training mean if the whole field is
+# missing it), and a ``has_history`` flag lets the model learn a separate debut
+# penalty/bonus. Applied in model.ConditionalLogit._prepare.
+IMPUTE_STRATEGY = "race_median"
 
 # --------------------------------------------------------------------------
 # Stage 3: model

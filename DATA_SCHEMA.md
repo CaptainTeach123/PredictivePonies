@@ -17,6 +17,18 @@ convert it into the layout below, or add a parser in `ponies/xml_io.py` that
 returns rows with the `START_COLUMNS` fields. Nothing after stage 1 depends on
 the XML layout.
 
+## TrackMaster Plus XML (supported directly)
+
+TrackMaster Plus data files (`plusProXMLData.xsd`, e.g. `fl20261020plusXML.xml`)
+are read by `ponies/trackmaster.py` without any conversion. Each file holds one
+track's card for one day, and every runner comes with its past performances
+(speed figures, finishes, beaten lengths, odds), so the card predicts properly
+with no other history loaded.
+
+* **No install:** load the file on the dashboard's *Enter a race* tab. It's processed in the browser.
+* **Local pipeline:** put files in `data/raw/trackmaster/`. That folder is git-ignored because TrackMaster data is licensed and must not be republished. The pipeline also keeps its past-performance lines out of the published `docs/data/history.csv` and `roster.json`. Don't commit `docs/data/predictions.json` from a run that included TrackMaster cards.
+* Unit and ID conventions: [A-23], [A-24] and [A-25] in `ASSUMPTIONS.md`.
+
 ## Results: `data/raw/results/*.xml`
 
 ```xml
