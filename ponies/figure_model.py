@@ -55,6 +55,7 @@ FIG_FEATURES: dict[str, str] = {
     "jockey_win_rate": "Jockey win rate, trailing window, shrunk [A-02][A-03]",
     "age": "Age in years",
     "has_history": "1 if horse has any prior start in the data [A-07]",
+    "abroad_recent": "Share of last 3 starts run abroad (figures not used) [A-36]",
 }
 FIG_FEATURE_NAMES = list(FIG_FEATURES)
 
@@ -81,6 +82,7 @@ def _index(history: pd.DataFrame):
             "surface": r.surface if isinstance(r.surface, str) else "",
             "purse": _nan(r.purse), "weight": _nan(getattr(r, "weight_lbs", math.nan)),
             "beaten": _nan(getattr(r, "beaten_lengths", math.nan)),
+            "abroad": _nan(getattr(r, "abroad", 0.0)) == 1.0,
         })
         jockeys.add(r.jockey_id, r.date, r.finish_position == 1)
     for lines in horses.values():
@@ -137,6 +139,8 @@ def _row_features(row, prior: list[dict], jockeys) -> dict:
         "jockey_win_rate": jockeys.rate(row.jockey_id, row.date),
         "age": _nan(row.age),
         "has_history": 1.0 if prior else 0.0,
+        "abroad_recent": (float(np.mean([s["abroad"] for s in prior[-config.RECENT_STARTS:]]))
+                          if prior else 0.0),
         "n_prior": len(prior),
     }
 
@@ -174,24 +178,31 @@ class SpeedFigureModel:
     stds: np.ndarray | None = None
     impute_values: np.ndarray | None = None
     sigmas: list[float] | None = None
+    temperature: float = 1.0  # [A-34] multiplies sigma
     n_train: int = 0
     name: str = "speed_figure"
     units: str = "speed-figure points"
 
     def _prepare(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
         X = df[self.feature_names].to_numpy(dtype=float)
-        if fit:
-            # Training rows come from one data source, so the training mean is
-            # on the right figure scale [A-30]; has_history marks debuts [A-07].
-            with np.errstate(all="ignore"), warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)  # all-missing column -> 0
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-missing column -> 0
+            if fit:
                 self.impute_values = np.nan_to_num(np.nanmean(X, axis=0))
+            # [A-07] missing = median of the runner's own race field (a debut
+            # horse or an import is "average for this race", whatever the
+            # figure level of that race); training mean if the field has none.
+            # has_history / abroad_recent let the model adjust from there.
+            field_median = (pd.DataFrame(X).groupby(df["race_id"].to_numpy())
+                            .transform("median").to_numpy())
+        X = np.where(np.isnan(X), field_median, X)
         X = np.where(np.isnan(X), self.impute_values, X)
         if fit:
             self.means = X.mean(axis=0)
             self.stds = X.std(axis=0)
             self.stds[self.stds == 0] = 1.0
-        return (X - self.means) / self.stds
+        # [A-33] cap extreme inputs
+        return np.clip((X - self.means) / self.stds, -config.FEATURE_CLIP_SD, config.FEATURE_CLIP_SD)
 
     def fit(self, feats: pd.DataFrame) -> "SpeedFigureModel":
         train = feats[feats["target_fig"].notna()]
@@ -215,7 +226,7 @@ class SpeedFigureModel:
     def predict_fig(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         Z = self._prepare(df, fit=False)
         mu = self.intercept + Z @ self.weights
-        sigma = np.array(self.sigmas)[_bucket(df["n_prior"].to_numpy())]
+        sigma = np.array(self.sigmas)[_bucket(df["n_prior"].to_numpy())] * self.temperature
         return mu, sigma
 
     def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
@@ -240,7 +251,7 @@ class SpeedFigureModel:
         return cls(feature_names=d["feature_names"], weights=np.array(d["weights"]),
                    intercept=d["intercept"], means=np.array(d["means"]), stds=np.array(d["stds"]),
                    impute_values=np.array(d["impute_values"]), sigmas=list(d["sigmas"]),
-                   n_train=d.get("n_train", 0))
+                   temperature=d.get("temperature", 1.0), n_train=d.get("n_train", 0))
 
     def to_dict(self) -> dict:
         return {
@@ -248,6 +259,7 @@ class SpeedFigureModel:
             "weights": self.weights.tolist(), "intercept": self.intercept,
             "means": self.means.tolist(), "stds": self.stds.tolist(),
             "impute_values": self.impute_values.tolist(), "sigmas": self.sigmas,
+            "temperature": self.temperature,
             "sigma_buckets": list(config.FIGURE_SIGMA_BUCKETS), "n_train": self.n_train,
             "feature_descriptions": FIG_FEATURES,
         }
@@ -279,6 +291,77 @@ def figure_metrics(model: SpeedFigureModel, test: pd.DataFrame) -> dict:
     }
 
 
+def _race_pairs(t: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """(ahead, behind) row indices for every pair of runners from the same race
+    with different finishing positions."""
+    fin = t["finish_position"].to_numpy(dtype=float)
+    ahead, behind = [], []
+    for _, idx in t.groupby("race_id").indices.items():
+        for a in range(len(idx)):
+            for b in range(a + 1, len(idx)):
+                i, j = idx[a], idx[b]
+                if fin[i] != fin[j]:
+                    ahead.append(i if fin[i] < fin[j] else j)
+                    behind.append(j if fin[i] < fin[j] else i)
+    return np.array(ahead, dtype=int), np.array(behind, dtype=int)
+
+
+def _phi(x: np.ndarray) -> np.ndarray:
+    return 0.5 * (1 + np.vectorize(math.erf)(x / math.sqrt(2)))
+
+
+def _pair_log_loss(mu, sigma, ahead, behind) -> float:
+    p = _phi((mu[ahead] - mu[behind]) / np.sqrt(sigma[ahead] ** 2 + sigma[behind] ** 2))
+    return float(-np.mean(np.log(np.clip(p, 1e-6, 1 - 1e-6))))
+
+
+def head_to_head(model: "SpeedFigureModel", test: pd.DataFrame) -> dict:
+    """Pairwise check against real outcomes and the betting market.
+
+    For every pair of runners from the same unseen past race (past-performance
+    files show several runners of many races), did the model rank the horse
+    that finished ahead higher? Same question for the market (lower final
+    odds) and for "average of last 3 figures". Plus pairwise log loss of
+    P(ahead beats behind) = Phi((mu_a - mu_b) / sqrt(sigma_a^2 + sigma_b^2))
+    vs the market's p_a / (p_a + p_b). [A-32] ln 2 = 0.693 is a coin flip.
+    """
+    from .odds import to_decimal
+
+    t = test[test["finish_position"].notna()].reset_index(drop=True)
+    ahead, behind = _race_pairs(t)
+    if len(ahead) == 0:
+        return {"pairs": 0}
+    mu, sigma = model.predict_fig(t)
+    dec = t["final_odds"].map(to_decimal).to_numpy(dtype=float)
+    avg3 = t["avg3_fig"].to_numpy(dtype=float)
+    mk = (dec[ahead] > 1) & (dec[behind] > 1)
+    q = (1 / dec[ahead][mk]) / (1 / dec[ahead][mk] + 1 / dec[behind][mk])
+    bl = ~(np.isnan(avg3[ahead]) | np.isnan(avg3[behind]))
+    return {
+        "pairs": int(len(ahead)),
+        "model_correct": round(float(np.mean(mu[ahead] > mu[behind])), 4),
+        "avg3_correct": round(float(np.mean(avg3[ahead][bl] > avg3[behind][bl])), 4) if bl.any() else None,
+        "market_correct": round(float(np.mean(dec[ahead][mk] < dec[behind][mk])), 4) if mk.any() else None,
+        "market_pairs": int(mk.sum()),
+        "model_pair_log_loss": round(_pair_log_loss(mu, sigma, ahead, behind), 4),
+        "market_pair_log_loss": round(float(-np.mean(np.log(q))), 4) if mk.any() else None,
+        "coin_flip_log_loss": round(math.log(2), 4),
+    }
+
+
+def calibrate_temperature(model: "SpeedFigureModel", test: pd.DataFrame) -> float | None:
+    """[A-34] Temperature that minimises head-to-head log loss on ``test``."""
+    t = test[test["finish_position"].notna()].reset_index(drop=True)
+    ahead, behind = _race_pairs(t)
+    if len(ahead) < config.MIN_CALIBRATION_PAIRS:
+        return None
+    saved = model.temperature
+    model.temperature = 1.0
+    mu, sigma = model.predict_fig(t)
+    model.temperature = saved
+    return min(config.TEMPERATURE_GRID, key=lambda T: _pair_log_loss(mu, T * sigma, ahead, behind))
+
+
 def fit_with_holdout(history: pd.DataFrame, test_fraction: float = config.TEST_FRACTION):
     """Fit on all starts with figures, and report accuracy on the latest
     ``test_fraction`` of them using a model fitted on the earlier ones [A-08].
@@ -286,12 +369,23 @@ def fit_with_holdout(history: pd.DataFrame, test_fraction: float = config.TEST_F
     Returns (model fitted on everything, metrics dict).
     """
     starts = history[history["speed_figure"].notna() & history["finish_position"].notna()]
+    if len(starts) < 20:
+        raise ValueError(f"Only {len(starts)} past starts with speed figures; need at least 20.")
     feats = build_figure_features(history, starts)
     dates = feats["date"].sort_values()
     cutoff = dates.iloc[int(len(dates) * (1 - test_fraction))] if len(dates) else None
     metrics = {"train_starts": int(len(feats))}
     early, late = feats[feats["date"] < cutoff], feats[feats["date"] >= cutoff]
     if len(early) >= 20 and len(late):
-        metrics["holdout"] = {"from": str(cutoff.date()),
-                              **figure_metrics(SpeedFigureModel().fit(early), late)}
-    return SpeedFigureModel().fit(feats), metrics
+        early_model = SpeedFigureModel().fit(early)
+        metrics["holdout"] = {"from": str(cutoff.date()), **figure_metrics(early_model, late),
+                              "head_to_head": head_to_head(early_model, late)}
+        T = calibrate_temperature(early_model, late)
+        if T is not None:
+            early_model.temperature = T
+            metrics["temperature"] = T
+            # note: T was tuned on these same pairs, so this is slightly optimistic
+            metrics["holdout"]["head_to_head_calibrated"] = head_to_head(early_model, late)
+    final = SpeedFigureModel().fit(feats)
+    final.temperature = metrics.get("temperature", 1.0)
+    return final, metrics

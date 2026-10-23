@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T22:37:15+00:00",
+  "generated_at": "2026-10-23T22:55:59+00:00",
   "synthetic_data": true,
   "type": "conditional_logit",
   "feature_names": [
@@ -100,6 +100,12 @@
   "final_train_loss": 1.613148836105033,
   "iterations": 197,
   "chosen_model": "speed_figure",
+  "race_log_loss": {
+    "model": 1.6019,
+    "uniform": 2.1794,
+    "market": 1.4018,
+    "model_on_market_races": 1.6019
+  },
   "backtest_weights": [
     0.12829930349297378,
     0.7282979559039648,

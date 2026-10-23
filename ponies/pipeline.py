@@ -55,6 +55,24 @@ def _clean(v):
     return v
 
 
+def value_flags_allowed(model_info: dict | None) -> tuple[bool, str | None]:
+    """[A-35] Only flag value bets when the model has beaten the market's log
+    loss on unseen races; otherwise 'value' mostly means longshots the model
+    can't actually assess. Returns (allowed, reason shown when not)."""
+    h = (model_info or {}).get("holdout", {})
+    h2h = h.get("head_to_head_calibrated") or h.get("head_to_head") or {}
+    mine, market = h2h.get("model_pair_log_loss"), h2h.get("market_pair_log_loss")
+    if mine is None or market is None:
+        race_ll = (model_info or {}).get("race_log_loss")
+        mine, market = (race_ll or {}).get("model"), (race_ll or {}).get("market")
+    if mine is None or market is None:
+        return False, "Value flags are off: the model hasn't been compared with the market yet."
+    if mine >= market:
+        return False, (f"Value flags are off: on unseen races the market (log loss {market}) "
+                       f"still beats the model ({mine}).")
+    return True, None
+
+
 def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = None) -> list[dict]:
     """Package predictions per race for the dashboard.
 
@@ -64,6 +82,7 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
     df = df.reset_index(drop=True)
     names = model.feature_names
     model_name = getattr(model, "name", "conditional_logit")
+    allow_value, value_note = value_flags_allowed(model_info)
     df["model_prob"] = model.predict_proba(df)
     if hasattr(model, "predict_fig"):
         df["pred_fig"], df["fig_sigma"] = model.predict_fig(df)
@@ -98,7 +117,8 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
                 # [A-22] no value flag without form data: imputed "average" features
                 # can make an unknown horse look like a bargain at long odds.
                 "no_history": not r["has_history"],
-                "value_flag": bool(r["edge_vs_ml"] > config.VALUE_EDGE_THRESHOLD and r["has_history"]),
+                "value_flag": bool(allow_value and r["edge_vs_ml"] > config.VALUE_EDGE_THRESHOLD
+                                   and r["has_history"]),
                 "finish_position": _clean(r["finish_position"]),
                 "pred_fig": _clean(r.get("pred_fig")), "fig_sigma": _clean(r.get("fig_sigma")),
                 "features": {f: _clean(r[f]) for f in names},
@@ -113,7 +133,7 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
             "race_class": _clean(first["race_class"]), "purse": _clean(first["purse"]),
             "field_size": len(g), "runners": runners,
             "model": model_name, "units": getattr(model, "units", "log-odds"),
-            "model_info": model_info,
+            "model_info": model_info, "value_note": value_note,
         })
     return cards
 
@@ -122,8 +142,9 @@ def trackmaster_cards(pps: pd.DataFrame, entries: pd.DataFrame, kind: str) -> tu
     """[A-30][A-31] Predict TrackMaster entries with speed-figure models trained
     on TrackMaster PP lines, one model per breed group (TB / QH).
 
-    Returns (cards, race_ids that couldn't be predicted: too few figured
-    starts for that breed).
+    Returns (cards, skipped) where skipped lists races that couldn't be
+    predicted (too few figured starts in that group, e.g. jump races, for
+    which TrackMaster publishes no speed figures).
     """
     cards, skipped = [], []
     for breed, races in entries.groupby(entries["breed"].fillna("TB")):
@@ -131,7 +152,10 @@ def trackmaster_cards(pps: pd.DataFrame, entries: pd.DataFrame, kind: str) -> tu
         try:
             model, info = fit_with_holdout(lines)
         except ValueError:
-            skipped += sorted(races["race_id"].unique())
+            reason = ("no speed figures for jump races in TrackMaster data" if breed == "TB-JUMP"
+                      else f"too few past starts with speed figures for {breed} races")
+            skipped += [{"race_id": rid, "group": breed, "reason": reason}
+                        for rid in sorted(races["race_id"].unique())]
             continue
         cards += race_cards(build_figure_features(lines, races), model, kind,
                             {**info, "breed": breed})
@@ -212,29 +236,32 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
         chosen = ("speed_figure" if fig_eval["log_loss"]["model"] < metrics["log_loss"]["model"]
                   else "conditional_logit")
     metrics["chosen_model"] = chosen
+    cl_info = {"race_log_loss": metrics["log_loss"]}
+    fig_info = {**fig_info, "race_log_loss": fig_eval["log_loss"]}
     use_fig = chosen == "speed_figure"
     cards = []
     if len(entries):
         cards += (race_cards(build_figure_features(public, entries), fig_live, "upcoming", fig_info)
-                  if use_fig else race_cards(build_features(history, entries), live_model, "upcoming"))
+                  if use_fig else race_cards(build_features(history, entries), live_model, "upcoming", cl_info))
     if len(tm_entries):
         tm_hist = history[history["source"] == TRACKMASTER]
         if config.WIN_MODEL == "conditional_logit":
-            cards += race_cards(build_features(history, tm_entries), live_model, "upcoming")
+            cards += race_cards(build_features(history, tm_entries), live_model, "upcoming", cl_info)
         else:
             tm_cards, skipped = trackmaster_cards(tm_hist, tm_entries, "upcoming")
             cards += tm_cards
             if skipped:
-                print(f"warning: not enough figured starts to predict {len(skipped)} race(s): {skipped}")
-    cards += (race_cards(test_fig, fig_bt_model, "backtest") if use_fig
-              else race_cards(test, model, "backtest"))
+                print(f"warning: {len(skipped)} race(s) not predicted: "
+                      + "; ".join(f"{s['race_id']} ({s['reason']})" for s in skipped))
+    cards += (race_cards(test_fig, fig_bt_model, "backtest", fig_info) if use_fig
+              else race_cards(test, model, "backtest", cl_info))
 
     synthetic = any(p.name.startswith("SYNTHETIC") for p in config.RAW_DIR.rglob("*.xml"))
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "synthetic_data": synthetic,
     }
-    model_doc = {**meta, **live_model.to_dict(), "chosen_model": chosen,
+    model_doc = {**meta, **live_model.to_dict(), "chosen_model": chosen, **cl_info,
                  "backtest_weights": model.weights.tolist(),
                  "feature_descriptions": FEATURES}
     (out_dir / "model.json").write_text(json.dumps(model_doc, indent=2))

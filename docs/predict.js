@@ -141,9 +141,13 @@ ${starters.join("\n")}
       const browser = await engine();
       setStatus("Predicting… (several files can take up to a minute)");
       await new Promise((r) => setTimeout(r, 50)); // let the status paint first
-      const cards = JSON.parse(await run(browser));
-      setStatus(`Done: ${cards.length} race${cards.length > 1 ? "s" : ""} predicted.`);
-      window.ponies.showCustomRaces(cards);
+      const out = JSON.parse(await run(browser));
+      const cards = Array.isArray(out) ? out : out.races;
+      const skipped = Array.isArray(out) ? [] : out.skipped || [];
+      const why = [...new Set(skipped.map((s) => s.reason))].join("; ");
+      setStatus(`Done: ${cards.length} race${cards.length === 1 ? "" : "s"} predicted` +
+        (skipped.length ? `; ${skipped.length} skipped (${why}).` : "."));
+      if (cards.length) window.ponies.showCustomRaces(cards);
     } catch (e) {
       // Python exceptions arrive with a long traceback; the last line is the useful bit.
       const msg = String(e.message || e).trim().split("\n").pop();

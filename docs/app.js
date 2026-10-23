@@ -30,7 +30,10 @@
     const info = race.model_info || {}, h = info.holdout;
     return `Model: speed-figure model, trained on ${info.train_starts ?? "?"} past starts` +
       (h && h.model_on_horses_with_form ? `. On unseen later starts its figure error was ±${h.model_on_horses_with_form.mae}
-        vs ±${h.baseline_avg_last3.mae} for "average of last 3"` : "") + ".";
+        vs ±${h.baseline_avg_last3.mae} for "average of last 3"` : "") +
+      (h && h.head_to_head && h.head_to_head.pairs ? `, and in ${h.head_to_head.pairs.toLocaleString()} same-race head-to-heads it
+        picked the horse that finished ahead ${pct(h.head_to_head.model_correct)} of the time (betting favourite:
+        ${pct(h.head_to_head.market_correct)})` : "") + ".";
   };
 
   // ---------- tabs ----------
@@ -65,7 +68,7 @@
     $("#race-header").innerHTML = `<h2>${esc(race.track)} · Race ${race.race_number} · ${esc(race.date)}</h2>
       <p>${[`${race.distance_furlongs}f ${esc(race.surface)}${race.condition ? ` (${esc(race.condition)})` : ""}`, esc(race.race_class),
         race.purse ? `purse $${race.purse.toLocaleString()}` : "", `${race.field_size} runners`].filter(Boolean).join(" · ")}</p>
-      <p class="hint">${modelLine(race)}</p>`;
+      <p class="hint">${modelLine(race)}</p>${race.value_note ? `<p class="hint">${esc(race.value_note)}</p>` : ""}`;
     const maxP = Math.max(...race.runners.map((r) => r.model_prob));
     tbody.innerHTML = race.runners.map((r, i) => `
       <tr tabindex="0" data-i="${i}" aria-selected="false" class="${r.finish_position === 1 ? "winner" : ""}">

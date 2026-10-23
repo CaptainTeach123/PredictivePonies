@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T22:37:15+00:00",
+  "generated_at": "2026-10-23T22:55:59+00:00",
   "synthetic_data": true,
   "races": 128,
   "runners": 1158,
@@ -111,28 +111,28 @@
     "race_backtest": {
       "races": 128,
       "log_loss": {
-        "model": 1.5638,
+        "model": 1.5275,
         "uniform": 2.1794,
         "market": 1.4018,
-        "model_on_market_races": 1.5638
+        "model_on_market_races": 1.5275
       },
-      "brier": 0.08001,
+      "brier": 0.07917,
       "top_pick_win_rate": {
-        "model": 0.375,
+        "model": 0.3906,
         "market_favourite": 0.4844
       },
       "betting_backtest": {
         "model_top_pick": {
           "bets": 128,
-          "wins": 48,
-          "profit": -48.0,
-          "roi": -0.375
+          "wins": 50,
+          "profit": -45.4,
+          "roi": -0.3547
         },
         "value_bets": {
-          "bets": 823,
+          "bets": 734,
           "wins": 31,
-          "profit": 248.3,
-          "roi": 0.3017,
+          "profit": 330.4,
+          "roi": 0.4501,
           "edge_threshold": 0.1
         }
       },
@@ -140,49 +140,56 @@
         {
           "bin_low": 0.0,
           "bin_high": 0.1,
-          "mean_predicted": 0.04017737588652483,
-          "observed_win_rate": 0.01702127659574468,
-          "count": 705
+          "mean_predicted": 0.03224365721997301,
+          "observed_win_rate": 0.022941970310391364,
+          "count": 741
         },
         {
           "bin_low": 0.1,
           "bin_high": 0.2,
-          "mean_predicted": 0.14223194444444445,
-          "observed_win_rate": 0.1746031746031746,
-          "count": 252
+          "mean_predicted": 0.14368532338308457,
+          "observed_win_rate": 0.1691542288557214,
+          "count": 201
         },
         {
           "bin_low": 0.2,
           "bin_high": 0.30000000000000004,
-          "mean_predicted": 0.2440013392857143,
-          "observed_win_rate": 0.2767857142857143,
-          "count": 112
+          "mean_predicted": 0.24364540816326535,
+          "observed_win_rate": 0.3163265306122449,
+          "count": 98
         },
         {
           "bin_low": 0.30000000000000004,
           "bin_high": 0.4,
-          "mean_predicted": 0.34849387755102035,
-          "observed_win_rate": 0.32653061224489793,
-          "count": 49
+          "mean_predicted": 0.3416092592592591,
+          "observed_win_rate": 0.2962962962962963,
+          "count": 54
         },
         {
           "bin_low": 0.4,
           "bin_high": 0.5,
-          "mean_predicted": 0.44346111111111114,
-          "observed_win_rate": 0.5925925925925926,
-          "count": 27
+          "mean_predicted": 0.4442028571428572,
+          "observed_win_rate": 0.34285714285714286,
+          "count": 35
         },
         {
           "bin_low": 0.5,
           "bin_high": 0.6000000000000001,
-          "mean_predicted": 0.5382,
-          "observed_win_rate": 0.625,
-          "count": 8
+          "mean_predicted": 0.5454472222222222,
+          "observed_win_rate": 0.5,
+          "count": 18
         },
         {
           "bin_low": 0.6000000000000001,
           "bin_high": 0.7000000000000001,
-          "mean_predicted": 0.6298199999999999,
+          "mean_predicted": 0.6446416666666667,
+          "observed_win_rate": 0.8333333333333334,
+          "count": 6
+        },
+        {
+          "bin_low": 0.7000000000000001,
+          "bin_high": 0.8,
+          "mean_predicted": 0.73391,
           "observed_win_rate": 0.8,
           "count": 5
         }
@@ -192,12 +199,12 @@
       "starts": 1158,
       "starts_with_prior_figure": 1158,
       "model": {
-        "mae": 6.88,
-        "rmse": 8.65
+        "mae": 6.93,
+        "rmse": 8.71
       },
       "model_on_horses_with_form": {
-        "mae": 6.88,
-        "rmse": 8.65
+        "mae": 6.93,
+        "rmse": 8.71
       },
       "baseline_last_figure": {
         "mae": 9.45,
@@ -207,7 +214,7 @@
         "mae": 7.58,
         "rmse": 9.57
       },
-      "correlation": 0.695
+      "correlation": 0.697
     },
     "train_starts": 7058
   },

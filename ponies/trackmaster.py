@@ -33,6 +33,7 @@ import pandas as pd
 from .xml_io import _to_frame, make_race_id
 
 SOURCE = "trackmaster"
+DOMESTIC_COUNTRIES = {"USA", "CAN", "PR", ""}  # [A-36]
 
 _SURFACE = {"D": "dirt", "T": "turf", "A": "synthetic"}
 _CONDITION = {
@@ -90,12 +91,19 @@ def _furlongs(el: ET.Element, dist_tag: str, unit_tag: str) -> float | None:
     return round(d * factor, 3) if d is not None and factor else None
 
 
-def breed_group(code: str) -> str:
-    """[A-31] Speed figures are only comparable within a breed: Thoroughbred
-    (TB) vs Quarter Horse (QH, AQHA scale). Mixed-breed races (MX) are run at
-    Quarter Horse distances, so they count as QH."""
+JUMP_COURSES = {"M", "B", "S"}  # [A-31] hurdle / brush-timber / steeplechase courses
+
+
+def breed_group(code: str, course_id: str = "") -> str:
+    """[A-31] Speed figures are only comparable within a group:
+    Thoroughbred flat (TB), Thoroughbred jump races (TB-JUMP) and Quarter Horse
+    (QH, AQHA scale). Mixed-breed races (MX) are run at Quarter Horse
+    distances, so they count as QH."""
     code = (code or "").upper()
-    return "QH" if code in {"QH", "MX"} else ("TB" if code in {"TB", ""} else code)
+    group = "QH" if code in {"QH", "MX"} else ("TB" if code in {"TB", ""} else code)
+    if group == "TB" and (course_id or "").upper() in JUMP_COURSES:
+        group = "TB-JUMP"
+    return group
 
 
 def _age(foal_date: str, race_date: str) -> int | None:
@@ -115,7 +123,7 @@ def _race_attrs(rd: ET.Element) -> dict:
         "condition": "",  # today's track condition isn't known pre-race
         "race_class": _t(rd, "stk_clm_md").lower(),
         "purse": _num(rd, "purse"),
-        "breed": breed_group(_t(rd, "breed_type")),
+        "breed": breed_group(_t(rd, "breed_type"), _t(rd, "course_id")),
     }
 
 
@@ -128,6 +136,11 @@ def _pp_row(p: ET.Element, hid: str, name: str, foal_date: str = "") -> dict | N
         return None
     track, date = _t(p, "trackcode"), _date(_t(p, "racedate"))
     fig = _num(p, "speedfigur")
+    # [A-36] figures from races abroad run on a higher scale: keep the start
+    # (experience, layoff) but not its figure
+    abroad = _t(p, "country").upper() not in DOMESTIC_COUNTRIES
+    if abroad:
+        fig = None
     odds = _num(p, "posttimeod")
     lengths = _num(p, "lenbackfin")
     return {
@@ -147,9 +160,10 @@ def _pp_row(p: ET.Element, hid: str, name: str, foal_date: str = "") -> dict | N
         "jockey_name": _t(p, "jockdisp") or None,
         "final_odds": f"{odds:.2f}" if odds else None,  # odds-to-one, e.g. 4.70
         "finish_position": finish,
-        "speed_figure": fig if fig else None,  # [A-25] 0 = no figure
+        "speed_figure": fig if fig and fig > 0 else None,  # [A-25] 0 / -97 = no figure
         "beaten_lengths": lengths / 100.0 if lengths is not None else None,  # hundredths
-        "breed": breed_group(_t(p, "racebreed")),
+        "breed": breed_group(_t(p, "racebreed"), _t(p, "courseid")),
+        "abroad": 1.0 if abroad else 0.0,
         "source": SOURCE,
     }
 

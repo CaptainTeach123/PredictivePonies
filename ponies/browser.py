@@ -37,8 +37,12 @@ def load_state(history_csv: str, model_json: str, figure_model_json: str | None 
     doc = json.loads(model_json)
     _state["model"] = ConditionalLogit.from_dict(doc)
     _state["chosen"] = doc.get("chosen_model", "conditional_logit")  # [A-30]
-    _state["figure_model"] = (SpeedFigureModel.from_dict(json.loads(figure_model_json))
-                              if figure_model_json else None)
+    fig_doc = json.loads(figure_model_json) if figure_model_json else None
+    _state["figure_model"] = SpeedFigureModel.from_dict(fig_doc) if fig_doc else None
+    # model_info for [A-35] value flags: the exported models' own test results
+    _state["cl_info"] = {"race_log_loss": doc.get("race_log_loss")}
+    _state["fig_info"] = ({k: fig_doc.get(k) for k in ("train_starts", "holdout", "temperature", "race_log_loss")}
+                          if fig_doc else None)
 
 
 def predict_card(entries_xml: str) -> str:
@@ -50,7 +54,7 @@ def predict_card(entries_xml: str) -> str:
     root = ET.fromstring(entries_xml)
     history = _state["history"]
     if is_trackmaster(root):
-        return predict_files(json.dumps([entries_xml]))
+        return json.dumps(json.loads(predict_files(json.dumps([entries_xml])))["races"])
     else:
         entries = _to_frame(parse_card_root(root, "entry"))
         if entries.empty:
@@ -122,6 +126,7 @@ def predict_files(xml_texts_json: str) -> str:
             pps.append(p)
         else:
             cards += json.loads(predict_card(text))
+    skipped = []
     if entries:
         all_entries = pd.concat(entries, ignore_index=True)
         if all_entries.empty:
@@ -130,13 +135,12 @@ def predict_files(xml_texts_json: str) -> str:
         all_pps = pd.concat(pps, ignore_index=True).drop_duplicates(["race_id", "horse_id"])
         tm, skipped = trackmaster_cards(all_pps, all_entries, "custom")
         cards += tm
-        if skipped:  # too few figured starts for that breed: use the exported model
-            left = all_entries[all_entries["race_id"].isin(skipped)]
-            cards += _predict_with_exported(combine_history(_state["history"], all_pps), left)
-    return json.dumps(cards, allow_nan=False)
+    # skipped races are reported, not predicted with a model that can't judge them
+    return json.dumps({"races": cards, "skipped": skipped}, allow_nan=False)
 
 
 def _predict_with_exported(history, entries) -> list[dict]:
     if _state["chosen"] == "speed_figure" and _state["figure_model"] is not None:
-        return race_cards(build_figure_features(history, entries), _state["figure_model"], "custom")
-    return race_cards(build_features(history, entries), _state["model"], "custom")
+        return race_cards(build_figure_features(history, entries), _state["figure_model"], "custom",
+                          _state["fig_info"])
+    return race_cards(build_features(history, entries), _state["model"], "custom", _state["cl_info"])

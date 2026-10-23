@@ -47,11 +47,11 @@ def test_browser_predicts_trackmaster_card(tmp_path):
     pipeline.run(tmp_path)
     browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
                        (tmp_path / "figure_model.json").read_text())
-    (card,) = json.loads(browser.predict_card(CARD))
-    runners = {r["horse"]: r for r in card["runners"]}
-    assert runners["Fast One"]["model_prob"] > runners["Slow One"]["model_prob"]
-    assert runners["Debut"]["no_history"] and not runners["Fast One"]["no_history"]
-    assert abs(sum(r["model_prob"] for r in card["runners"]) - 1) < 1e-3
+    # 3 figured starts is too few to train on: the race is skipped with a reason
+    browser.stage_clear()
+    browser.stage_xml(CARD)
+    out = json.loads(browser.predict_staged())
+    assert out["races"] == [] and "too few" in out["skipped"][0]["reason"]
 
 
 def _big_card(n_lines=12):
@@ -98,8 +98,9 @@ def test_zip_of_zips_upload_is_pooled(tmp_path):
                        (tmp_path / "figure_model.json").read_text())
     browser.stage_clear()
     assert browser.stage_zip(outer.getvalue()) == 2
-    cards = json.loads(browser.predict_staged())
-    assert sorted(c["track"] for c in cards) == ["FL", "XX"]
+    out = json.loads(browser.predict_staged())
+    cards = out["races"]
+    assert sorted(c["track"] for c in cards) == ["FL", "XX"] and out["skipped"] == []
     # both files list the same past starts (same horses/dates/tracks) -> deduplicated
     assert cards[0]["model_info"]["train_starts"] == 24
 
@@ -108,3 +109,20 @@ def test_quarter_horse_lines_train_separately():
     qh = CARD.replace("<race_date>", "<breed_type>QH</breed_type><race_date>")
     entries, pps = parse_trackmaster(ET.fromstring(qh))
     assert set(entries["breed"]) == {"QH"} and set(pps["breed"]) == {"TB"}  # PP racebreed missing -> TB
+
+
+def test_jump_races_skipped_with_reason(tmp_path):
+    """TrackMaster has no speed figures for jump races (-97 placeholder): they
+    form their own group [A-31], can't be trained, and are reported as skipped."""
+    jump = (_big_card().replace("<surface>D</surface><purse>", "<surface>T</surface><course_id>M</course_id><purse>", 1)
+            .replace("<surface>D</surface>", "<surface>T</surface><courseid>M</courseid>")
+            .replace("<speedfigur>", "<speedfigur>-97<!--").replace("</speedfigur>", "--></speedfigur>"))
+    entries, pps = parse_trackmaster(ET.fromstring(jump))
+    assert set(entries["breed"]) == {"TB-JUMP"} and pps["speed_figure"].isna().all()
+    pipeline.run(tmp_path)
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
+    browser.stage_clear()
+    browser.stage_xml(jump)
+    out = json.loads(browser.predict_staged())
+    assert out["races"] == [] and "jump" in out["skipped"][0]["reason"]

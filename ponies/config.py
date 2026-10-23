@@ -115,3 +115,15 @@ SIMULATION_SEED = 0
 # never mix); every other card uses whichever model has the lower backtest
 # log loss on the held-out races. Or force "speed_figure" / "conditional_logit".
 WIN_MODEL = "auto"
+
+# [A-33] Standardised speed-figure-model inputs are capped at +/- this many
+# standard deviations, so one odd value (a foreign line, a huge distance or
+# weight change) can't produce an extreme predicted figure.
+FEATURE_CLIP_SD = 4.0
+
+# [A-34] Win-probability calibration: sigma is multiplied by a "temperature"
+# chosen from this grid to minimise head-to-head log loss on unseen later
+# races (fit_with_holdout). Needs at least MIN_CALIBRATION_PAIRS pairs,
+# otherwise the temperature stays 1.
+TEMPERATURE_GRID = tuple(x / 4 for x in range(2, 25))   # 0.5 .. 6.0
+MIN_CALIBRATION_PAIRS = 100
