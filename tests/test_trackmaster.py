@@ -74,3 +74,37 @@ def test_trackmaster_card_trains_speed_figure_model_in_browser(tmp_path):
     r = {x["horse"]: x for x in card["runners"]}
     assert r["Steady"]["pred_fig"] > r["Plodder"]["pred_fig"] + 10
     assert r["Steady"]["model_prob"] > 0.8
+
+
+def test_zip_of_zips_upload_is_pooled(tmp_path):
+    """A TrackMaster-style daily download (zip of per-track zips) is unpacked
+    and every card predicted, with PP lines pooled for training."""
+    import io
+    import zipfile
+
+    def zipped(name, data):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(name, data)
+        return buf.getvalue()
+
+    second = _big_card().replace("<track>FL</track>", "<track>XX</track>")
+    outer = io.BytesIO()
+    with zipfile.ZipFile(outer, "w") as z:
+        z.writestr("day/fl.zip", zipped("fl.xml", _big_card()))
+        z.writestr("day/xx.zip", zipped("xx.xml", second))
+    pipeline.run(tmp_path)
+    browser.load_state((tmp_path / "history.csv").read_text(), (tmp_path / "model.json").read_text(),
+                       (tmp_path / "figure_model.json").read_text())
+    browser.stage_clear()
+    assert browser.stage_zip(outer.getvalue()) == 2
+    cards = json.loads(browser.predict_staged())
+    assert sorted(c["track"] for c in cards) == ["FL", "XX"]
+    # both files list the same past starts (same horses/dates/tracks) -> deduplicated
+    assert cards[0]["model_info"]["train_starts"] == 24
+
+
+def test_quarter_horse_lines_train_separately():
+    qh = CARD.replace("<race_date>", "<breed_type>QH</breed_type><race_date>")
+    entries, pps = parse_trackmaster(ET.fromstring(qh))
+    assert set(entries["breed"]) == {"QH"} and set(pps["breed"]) == {"TB"}  # PP racebreed missing -> TB

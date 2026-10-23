@@ -33,7 +33,7 @@ START_COLUMNS = [
     "jockey_id", "jockey_name", "trainer_id", "trainer_name",
     "morning_line", "final_odds",
     "finish_position", "speed_figure", "beaten_lengths",
-    "source",
+    "breed", "source",
 ]
 
 NUMERIC_COLUMNS = [

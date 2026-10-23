@@ -38,6 +38,9 @@ _SURFACE = {"D": "dirt", "T": "turf", "A": "synthetic"}
 _CONDITION = {
     "FT": "fast", "GD": "good", "SY": "sloppy", "MY": "muddy", "WF": "wet fast",
     "SL": "slow", "HY": "heavy", "FM": "firm", "YL": "yielding", "SF": "soft",
+    # [A-25] rarer codes: good-to-firm (dry), good-to-soft (wet), standard
+    # all-weather (dry), wet, frozen (dry)
+    "GF": "firm", "GS": "soft", "ST": "standard", "WT": "wet fast", "FZ": "frozen",
 }
 
 
@@ -75,12 +78,24 @@ def horse_id(horsedata: ET.Element) -> str:
     return f"TM-H-{_slug(_t(horsedata, 'horse_name'))}-{_t(horsedata, 'foal_date')}"
 
 
+# [A-24] TrackMaster distance units: F = hundredths of a furlong ('550.0' =
+# 5.5f), Y = yards (Quarter Horse sprints, '350' = 350 yards), M = metres
+# ('1200.0' displayed as '6F*').
+_TO_FURLONGS = {"F": 0.01, "": 0.01, "Y": 1 / 220.0, "M": 1 / 201.168}
+
+
 def _furlongs(el: ET.Element, dist_tag: str, unit_tag: str) -> float | None:
-    """[A-24] Distances are hundredths of a furlong ('550.0' = 5.5f)."""
     d = _num(el, dist_tag)
-    if d is None or _t(el, unit_tag) not in ("F", ""):
-        return None
-    return d / 100.0
+    factor = _TO_FURLONGS.get(_t(el, unit_tag).upper())
+    return round(d * factor, 3) if d is not None and factor else None
+
+
+def breed_group(code: str) -> str:
+    """[A-31] Speed figures are only comparable within a breed: Thoroughbred
+    (TB) vs Quarter Horse (QH, AQHA scale). Mixed-breed races (MX) are run at
+    Quarter Horse distances, so they count as QH."""
+    code = (code or "").upper()
+    return "QH" if code in {"QH", "MX"} else ("TB" if code in {"TB", ""} else code)
 
 
 def _age(foal_date: str, race_date: str) -> int | None:
@@ -100,6 +115,7 @@ def _race_attrs(rd: ET.Element) -> dict:
         "condition": "",  # today's track condition isn't known pre-race
         "race_class": _t(rd, "stk_clm_md").lower(),
         "purse": _num(rd, "purse"),
+        "breed": breed_group(_t(rd, "breed_type")),
     }
 
 
@@ -133,6 +149,7 @@ def _pp_row(p: ET.Element, hid: str, name: str, foal_date: str = "") -> dict | N
         "finish_position": finish,
         "speed_figure": fig if fig else None,  # [A-25] 0 = no figure
         "beaten_lengths": lengths / 100.0 if lengths is not None else None,  # hundredths
+        "breed": breed_group(_t(p, "racebreed")),
         "source": SOURCE,
     }
 

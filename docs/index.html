@@ -125,14 +125,15 @@
             </div>
             <button type="button" id="add-runner" class="secondary">+ Add runner</button>
             <p class="hint">Rows are in post-position order. Odds are US style (5-2, 7/2, 8 for 8-1, EVEN).</p>
-            <p class="hint">Have a <strong>TrackMaster Plus XML</strong> card? Load it below. Its past performances
-              give every horse real form, and the file is read in your browser and never uploaded.</p>
+            <p class="hint">Have <strong>TrackMaster Plus XML</strong> cards? Load them below, as single files or the
+              daily ZIP as downloaded. Select several tracks at once and the model trains on all their past
+              performances together, which makes it more accurate. Files are read in your browser and never uploaded.</p>
           </fieldset>
           <div class="actions">
             <button type="submit" class="primary">Predict race</button>
             <button type="button" id="download-xml" class="secondary">Download as XML</button>
-            <label class="file secondary">Load an XML file (entries or TrackMaster)…
-              <input type="file" id="xml-file" accept=".xml,text/xml" class="sr-only"></label>
+            <label class="file secondary">Load XML or ZIP files (entries or TrackMaster)…
+              <input type="file" id="xml-file" accept=".xml,.zip,text/xml,application/zip" multiple class="sr-only"></label>
           </div>
           <p id="engine-status" class="hint" role="status" aria-live="polite"></p>
         </form>

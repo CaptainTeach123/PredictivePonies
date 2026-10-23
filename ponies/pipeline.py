@@ -118,6 +118,26 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
     return cards
 
 
+def trackmaster_cards(pps: pd.DataFrame, entries: pd.DataFrame, kind: str) -> tuple[list[dict], list[str]]:
+    """[A-30][A-31] Predict TrackMaster entries with speed-figure models trained
+    on TrackMaster PP lines, one model per breed group (TB / QH).
+
+    Returns (cards, race_ids that couldn't be predicted: too few figured
+    starts for that breed).
+    """
+    cards, skipped = [], []
+    for breed, races in entries.groupby(entries["breed"].fillna("TB")):
+        lines = pps[pps["breed"].fillna("TB") == breed]
+        try:
+            model, info = fit_with_holdout(lines)
+        except ValueError:
+            skipped += sorted(races["race_id"].unique())
+            continue
+        cards += race_cards(build_figure_features(lines, races), model, kind,
+                            {**info, "breed": breed})
+    return cards, skipped
+
+
 def build_roster(history: pd.DataFrame) -> dict:
     """Latest known name/details per horse, jockey and trainer."""
     h = history.sort_values("date")
@@ -202,8 +222,10 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
         if config.WIN_MODEL == "conditional_logit":
             cards += race_cards(build_features(history, tm_entries), live_model, "upcoming")
         else:
-            tm_model, tm_info = fit_with_holdout(tm_hist)
-            cards += race_cards(build_figure_features(tm_hist, tm_entries), tm_model, "upcoming", tm_info)
+            tm_cards, skipped = trackmaster_cards(tm_hist, tm_entries, "upcoming")
+            cards += tm_cards
+            if skipped:
+                print(f"warning: not enough figured starts to predict {len(skipped)} race(s): {skipped}")
     cards += (race_cards(test_fig, fig_bt_model, "backtest") if use_fig
               else race_cards(test, model, "backtest"))
 

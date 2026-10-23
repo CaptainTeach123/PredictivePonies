@@ -18,11 +18,14 @@ from __future__ import annotations
 import io
 import json
 import xml.etree.ElementTree as ET
+import zipfile
+
+import pandas as pd
 
 from .features import build_features
-from .figure_model import SpeedFigureModel, build_figure_features, fit_with_holdout
+from .figure_model import SpeedFigureModel, build_figure_features
 from .model import ConditionalLogit
-from .pipeline import race_cards
+from .pipeline import race_cards, trackmaster_cards
 from .trackmaster import is_trackmaster, parse_trackmaster
 from .xml_io import _to_frame, combine_history, history_from_csv, parse_card_root
 
@@ -47,20 +50,89 @@ def predict_card(entries_xml: str) -> str:
     root = ET.fromstring(entries_xml)
     history = _state["history"]
     if is_trackmaster(root):
-        # [A-30] train the speed-figure model on this file's own PP lines.
-        entries, pps = parse_trackmaster(root)
-        if entries.empty:
-            raise ValueError("No runners found in the race card.")
-        try:
-            model, info = fit_with_holdout(pps)
-            cards = race_cards(build_figure_features(pps, entries), model, "custom", info)
-        except ValueError:  # too few figured starts to train on: use the exported model
-            cards = _predict_with_exported(combine_history(history, pps), entries)
+        return predict_files(json.dumps([entries_xml]))
     else:
         entries = _to_frame(parse_card_root(root, "entry"))
         if entries.empty:
             raise ValueError("No runners found in the race card.")
         cards = _predict_with_exported(history, entries)
+    return json.dumps(cards, allow_nan=False)
+
+
+# ---- uploads: files are staged in Python so large cards aren't copied back to JS
+MAX_XML_BYTES = 60_000_000        # per file
+MAX_TOTAL_BYTES = 600_000_000     # per upload
+
+
+def stage_clear() -> None:
+    _state["staged"] = []
+
+
+def stage_xml(text: str) -> int:
+    _state.setdefault("staged", []).append(text)
+    return len(_state["staged"])
+
+
+def stage_zip(data) -> int:
+    """Add every .xml inside a zip (zips inside zips too, like TrackMaster's
+    daily downloads). ``data`` is bytes, or a JS Uint8Array from Pyodide."""
+    raw = bytes(data.to_py()) if hasattr(data, "to_py") else bytes(data)
+    total = sum(len(t) for t in _state.get("staged", []))
+
+    def walk(blob: bytes, depth: int = 0):
+        nonlocal total
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            for info in zf.infolist():
+                name = info.filename.lower()
+                if name.endswith(".zip") and depth < 3:
+                    walk(zf.read(info), depth + 1)
+                elif name.endswith(".xml") and info.file_size <= MAX_XML_BYTES:
+                    total += info.file_size
+                    if total > MAX_TOTAL_BYTES:
+                        raise ValueError("Upload too large (over 600 MB of XML).")
+                    stage_xml(zf.read(info).decode("utf-8", errors="replace"))
+
+    walk(raw)
+    return len(_state.get("staged", []))
+
+
+def predict_staged() -> str:
+    texts = _state.get("staged", [])
+    if not texts:
+        raise ValueError("No XML files found in the upload.")
+    try:
+        return predict_files(json.dumps(texts))
+    finally:
+        stage_clear()
+
+
+def predict_files(xml_texts_json: str) -> str:
+    """Several TrackMaster files at once (JSON list of XML strings).
+
+    All files' PP lines are pooled to train the speed-figure models (one per
+    breed [A-31]), so more files = more training data; every file's races are
+    predicted. Non-TrackMaster files are predicted one by one as usual.
+    """
+    entries, pps, cards = [], [], []
+    for text in json.loads(xml_texts_json):
+        root = ET.fromstring(text)
+        if is_trackmaster(root):
+            e, p = parse_trackmaster(root)
+            entries.append(e)
+            pps.append(p)
+        else:
+            cards += json.loads(predict_card(text))
+    if entries:
+        all_entries = pd.concat(entries, ignore_index=True)
+        if all_entries.empty:
+            raise ValueError("No runners found in the race card.")
+        # the same past start can appear in several files (horse entered twice)
+        all_pps = pd.concat(pps, ignore_index=True).drop_duplicates(["race_id", "horse_id"])
+        tm, skipped = trackmaster_cards(all_pps, all_entries, "custom")
+        cards += tm
+        if skipped:  # too few figured starts for that breed: use the exported model
+            left = all_entries[all_entries["race_id"].isin(skipped)]
+            cards += _predict_with_exported(combine_history(_state["history"], all_pps), left)
     return json.dumps(cards, allow_nan=False)
 
 

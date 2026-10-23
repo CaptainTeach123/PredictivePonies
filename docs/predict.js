@@ -133,13 +133,15 @@ ${starters.join("\n")}
     return enginePromise;
   }
 
-  async function predict(xml) {
+  // run(browser) returns the JSON string of race cards.
+  async function predict(run) {
     const btn = $('button[type="submit"]', form);
     btn.disabled = true;
     try {
       const browser = await engine();
-      setStatus("Predicting…");
-      const cards = JSON.parse(browser.predict_card(xml));
+      setStatus("Predicting… (several files can take up to a minute)");
+      await new Promise((r) => setTimeout(r, 50)); // let the status paint first
+      const cards = JSON.parse(await run(browser));
       setStatus(`Done: ${cards.length} race${cards.length > 1 ? "s" : ""} predicted.`);
       window.ponies.showCustomRaces(cards);
     } catch (e) {
@@ -155,15 +157,26 @@ ${starters.join("\n")}
     e.preventDefault();
     let xml;
     try { xml = formToXml(); } catch (err) { setStatus(err.message, true); return; }
-    predict(xml);
+    predict((browser) => browser.predict_card(xml));
   });
 
+  // One or more .xml / .zip files. TrackMaster files are pooled, so the
+  // model trains on every file's past performances together.
   $("#xml-file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setStatus(`Read ${file.name}.`);
-    predict(await file.text());
+    const files = [...e.target.files];
     e.target.value = "";
+    if (!files.length) return;
+    predict(async (browser) => {
+      browser.stage_clear();
+      for (const [i, f] of files.entries()) {
+        setStatus(`Reading ${f.name} (${i + 1} of ${files.length})…`);
+        if (/\.zip$/i.test(f.name)) browser.stage_zip(new Uint8Array(await f.arrayBuffer()));
+        else browser.stage_xml(await f.text());
+      }
+      setStatus("Training the speed-figure model and predicting… (up to a minute for many tracks)");
+      await new Promise((r) => setTimeout(r, 50));
+      return browser.predict_staged();
+    });
   });
 
   $("#download-xml").addEventListener("click", () => {
