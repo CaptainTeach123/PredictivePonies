@@ -127,3 +127,12 @@ FEATURE_CLIP_SD = 4.0
 # otherwise the temperature stays 1.
 TEMPERATURE_GRID = tuple(x / 4 for x in range(2, 25))   # 0.5 .. 6.0
 MIN_CALIBRATION_PAIRS = 100
+
+
+# [A-37] Model + market blend (Benter): score_i = a * expected_figure_i +
+# b * log(market win probability_i), softmax within the race. a and b are
+# learned by logistic regression on same-race head-to-heads (slice B of
+# figure_model.fit_with_holdout), using FINAL odds from past-performance lines.
+# [A-38] For upcoming races the market term uses MORNING-LINE odds (final odds
+# aren't known yet); a runner without odds gets the race median.
+BLEND_MARKET_COLUMN = "morning_line"

@@ -179,6 +179,7 @@ class SpeedFigureModel:
     impute_values: np.ndarray | None = None
     sigmas: list[float] | None = None
     temperature: float = 1.0  # [A-34] multiplies sigma
+    blend: tuple[float, float] | None = None  # [A-37] (a, b) for model + market
     n_train: int = 0
     name: str = "speed_figure"
     units: str = "speed-figure points"
@@ -229,8 +230,30 @@ class SpeedFigureModel:
         sigma = np.array(self.sigmas)[_bucket(df["n_prior"].to_numpy())] * self.temperature
         return mu, sigma
 
-    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
-        """[A-29] Monte Carlo win probabilities, per race."""
+    def predict_proba(self, df: pd.DataFrame, market_col: str = config.BLEND_MARKET_COLUMN) -> np.ndarray:
+        """Win probabilities: the model blended with market odds when blend
+        weights were learned [A-37]; otherwise the model alone [A-29]."""
+        if self.blend is None or market_col not in df:
+            return self.predict_model_only(df)
+        mu, _ = self.predict_fig(df)
+        logq = _log_market(df, market_col)
+        model_only = None
+        probs = np.zeros(len(df))
+        a, b = self.blend
+        for _, idx in df.groupby(df["race_id"].to_numpy(), sort=False).indices.items():
+            lq = logq[idx]
+            if np.isnan(lq).all():  # no odds for this race: model alone
+                model_only = self.predict_model_only(df) if model_only is None else model_only
+                probs[idx] = model_only[idx]
+                continue
+            lq = np.where(np.isnan(lq), np.nanmedian(lq), lq)  # [A-38] missing odds = race median
+            u = a * mu[idx] + b * lq
+            e = np.exp(u - u.max())
+            probs[idx] = e / e.sum()
+        return probs
+
+    def predict_model_only(self, df: pd.DataFrame) -> np.ndarray:
+        """[A-29] Monte Carlo win probabilities from the model alone, per race."""
         mu, sigma = self.predict_fig(df)
         probs = np.zeros(len(df))
         for _, idx in df.groupby(df["race_id"].to_numpy(), sort=False).indices.items():
@@ -251,7 +274,8 @@ class SpeedFigureModel:
         return cls(feature_names=d["feature_names"], weights=np.array(d["weights"]),
                    intercept=d["intercept"], means=np.array(d["means"]), stds=np.array(d["stds"]),
                    impute_values=np.array(d["impute_values"]), sigmas=list(d["sigmas"]),
-                   temperature=d.get("temperature", 1.0), n_train=d.get("n_train", 0))
+                   temperature=d.get("temperature", 1.0),
+                   blend=tuple(d["blend"]) if d.get("blend") else None, n_train=d.get("n_train", 0))
 
     def to_dict(self) -> dict:
         return {
@@ -259,7 +283,7 @@ class SpeedFigureModel:
             "weights": self.weights.tolist(), "intercept": self.intercept,
             "means": self.means.tolist(), "stds": self.stds.tolist(),
             "impute_values": self.impute_values.tolist(), "sigmas": self.sigmas,
-            "temperature": self.temperature,
+            "temperature": self.temperature, "blend": list(self.blend) if self.blend else None,
             "sigma_buckets": list(config.FIGURE_SIGMA_BUCKETS), "n_train": self.n_train,
             "feature_descriptions": FIG_FEATURES,
         }
@@ -289,6 +313,55 @@ def figure_metrics(model: SpeedFigureModel, test: pd.DataFrame) -> dict:
         "baseline_avg_last3": err(t["avg3_fig"].to_numpy(), base),
         "correlation": round(float(np.corrcoef(mu, y)[0, 1]), 3) if len(t) > 2 else None,
     }
+
+
+def _log_market(df: pd.DataFrame, col: str) -> np.ndarray:
+    """log(implied win probability) up to a per-race constant: -log(decimal odds).
+    The constant cancels in within-race comparisons. NaN where odds are missing."""
+    from .odds import to_decimal
+
+    dec = df[col].map(to_decimal).to_numpy(dtype=float)
+    with np.errstate(all="ignore"):
+        return np.where(dec > 1, -np.log(dec), np.nan)
+
+
+def _winner_pairs(t: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """(winner, other) pairs: the race winner vs each other runner seen from
+    that race. This is the "who wins" question that win betting depends on."""
+    ahead, behind = _race_pairs(t)
+    keep = t["finish_position"].to_numpy(dtype=float)[ahead] == 1
+    return ahead[keep], behind[keep]
+
+
+def _blend_design(model: "SpeedFigureModel", t: pd.DataFrame):
+    """[A-37] Winner pairs with odds on both sides:
+    X = [mu_winner - mu_other, logq_winner - logq_other]."""
+    t = t[t["finish_position"].notna()].reset_index(drop=True)
+    ahead, behind = _winner_pairs(t)
+    if len(ahead) == 0:
+        return np.zeros((0, 2))
+    mu, _ = model.predict_fig(t)
+    lq = _log_market(t, "final_odds")
+    ok = ~(np.isnan(lq[ahead]) | np.isnan(lq[behind]))
+    return np.column_stack([mu[ahead] - mu[behind], lq[ahead] - lq[behind]])[ok]
+
+
+def fit_blend(X: np.ndarray) -> tuple[float, float] | None:
+    """[A-37] Logistic regression without intercept on pair differences:
+    P(ahead beats behind) = sigmoid(a * d_mu + b * d_logq). Newton's method."""
+    if len(X) < config.MIN_CALIBRATION_PAIRS:
+        return None
+    w = np.array([0.0, 1.0])  # start at "market only"
+    lam = 1e-3 * len(X)
+    for _ in range(50):
+        p = 1 / (1 + np.exp(-(X @ w)))
+        grad = X.T @ (1 - p) - lam * w
+        H = -(X.T * (p * (1 - p))) @ X - lam * np.eye(2)
+        step = np.linalg.solve(H, grad)
+        w = w - step
+        if np.abs(step).max() < 1e-8:
+            break
+    return float(w[0]), float(w[1])
 
 
 def _race_pairs(t: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -337,7 +410,35 @@ def head_to_head(model: "SpeedFigureModel", test: pd.DataFrame) -> dict:
     mk = (dec[ahead] > 1) & (dec[behind] > 1)
     q = (1 / dec[ahead][mk]) / (1 / dec[ahead][mk] + 1 / dec[behind][mk])
     bl = ~(np.isnan(avg3[ahead]) | np.isnan(avg3[behind]))
+    blend = {}
+    lq = _log_market(t, "final_odds")
+    if model.blend is not None and mk.any():
+        a, b = model.blend
+        z = a * (mu[ahead][mk] - mu[behind][mk]) + b * (lq[ahead][mk] - lq[behind][mk])
+        blend = {"blend_correct": round(float(np.mean(z > 0)), 4),
+                 "blend_pair_log_loss": round(float(np.mean(np.log1p(np.exp(-z)))), 4)}
+    # [A-35] the "who wins" test: winner vs each other runner, odds on both sides
+    wa, wb = _winner_pairs(t)
+    wok = ~(np.isnan(lq[wa]) | np.isnan(lq[wb])) if len(wa) else np.zeros(0, bool)
+    wa, wb = wa[wok], wb[wok]
+    if len(wa):
+        market_loss = np.log1p(np.exp(-(lq[wa] - lq[wb])))
+        if model.blend is not None:
+            a, b = model.blend
+            ours = np.log1p(np.exp(-(a * (mu[wa] - mu[wb]) + b * (lq[wa] - lq[wb]))))
+        else:
+            p_ = _phi((mu[wa] - mu[wb]) / np.sqrt(sigma[wa] ** 2 + sigma[wb] ** 2))
+            ours = -np.log(np.clip(p_, 1e-6, 1 - 1e-6))
+        diff = market_loss - ours  # > 0 = we beat the market
+        blend.update({
+            "win_pairs": int(len(wa)),
+            "market_win_pair_log_loss": round(float(market_loss.mean()), 4),
+            "ours_win_pair_log_loss": round(float(ours.mean()), 4),
+            "win_improvement": round(float(diff.mean()), 5),
+            "win_improvement_se": round(float(diff.std(ddof=1) / np.sqrt(len(diff))), 5) if len(diff) > 1 else None,
+        })
     return {
+        **blend,
         "pairs": int(len(ahead)),
         "model_correct": round(float(np.mean(mu[ahead] > mu[behind])), 4),
         "avg3_correct": round(float(np.mean(avg3[ahead][bl] > avg3[behind][bl])), 4) if bl.any() else None,
@@ -363,29 +464,41 @@ def calibrate_temperature(model: "SpeedFigureModel", test: pd.DataFrame) -> floa
 
 
 def fit_with_holdout(history: pd.DataFrame, test_fraction: float = config.TEST_FRACTION):
-    """Fit on all starts with figures, and report accuracy on the latest
-    ``test_fraction`` of them using a model fitted on the earlier ones [A-08].
+    """Fit the speed-figure model and report how it does on unseen starts.
 
-    Returns (model fitted on everything, metrics dict).
+    Three chronological slices [A-08][A-34][A-37]:
+      A = oldest starts                   -> train a model
+      B = next ``test_fraction``          -> tune temperature + blend weights on A's predictions
+      C = newest ``test_fraction``        -> score a model trained on A+B with those settings
+    The final model is trained on everything with the same settings.
+
+    Returns (final model, metrics dict).
     """
     starts = history[history["speed_figure"].notna() & history["finish_position"].notna()]
     if len(starts) < 20:
         raise ValueError(f"Only {len(starts)} past starts with speed figures; need at least 20.")
     feats = build_figure_features(history, starts)
-    dates = feats["date"].sort_values()
-    cutoff = dates.iloc[int(len(dates) * (1 - test_fraction))] if len(dates) else None
+    dates = feats["date"].sort_values().reset_index(drop=True)
+    cut_b = dates.iloc[int(len(dates) * (1 - 2 * test_fraction))]
+    cut_c = dates.iloc[int(len(dates) * (1 - test_fraction))]
+    A, B, C = feats[feats["date"] < cut_b], feats[(feats["date"] >= cut_b) & (feats["date"] < cut_c)], \
+        feats[feats["date"] >= cut_c]
     metrics = {"train_starts": int(len(feats))}
-    early, late = feats[feats["date"] < cutoff], feats[feats["date"] >= cutoff]
-    if len(early) >= 20 and len(late):
-        early_model = SpeedFigureModel().fit(early)
-        metrics["holdout"] = {"from": str(cutoff.date()), **figure_metrics(early_model, late),
-                              "head_to_head": head_to_head(early_model, late)}
-        T = calibrate_temperature(early_model, late)
+    T, blend = None, None
+    if len(A) >= 20 and len(B) and len(C):
+        model_a = SpeedFigureModel().fit(A)
+        T = calibrate_temperature(model_a, B)
+        model_a.temperature = T or 1.0
+        blend = fit_blend(_blend_design(model_a, B))
+        model_ab = SpeedFigureModel().fit(feats[feats["date"] < cut_c])
+        raw = head_to_head(model_ab, C)
+        model_ab.temperature, model_ab.blend = T or 1.0, blend
+        metrics["holdout"] = {"from": str(cut_c.date()), **figure_metrics(model_ab, C),
+                              "head_to_head": raw, "head_to_head_calibrated": head_to_head(model_ab, C)}
         if T is not None:
-            early_model.temperature = T
             metrics["temperature"] = T
-            # note: T was tuned on these same pairs, so this is slightly optimistic
-            metrics["holdout"]["head_to_head_calibrated"] = head_to_head(early_model, late)
+        if blend is not None:
+            metrics["blend_weights"] = {"a_per_figure_point": round(blend[0], 4), "b_market": round(blend[1], 4)}
     final = SpeedFigureModel().fit(feats)
-    final.temperature = metrics.get("temperature", 1.0)
+    final.temperature, final.blend = T or 1.0, blend
     return final, metrics

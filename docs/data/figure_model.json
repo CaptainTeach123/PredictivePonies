@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T22:55:59+00:00",
+  "generated_at": "2026-10-23T23:06:35+00:00",
   "synthetic_data": true,
   "type": "speed_figure",
   "units": "speed-figure points",
@@ -131,6 +131,10 @@
     8.645442083292735
   ],
   "temperature": 0.75,
+  "blend": [
+    0.0005504958917854769,
+    0.8968410130921511
+  ],
   "sigma_buckets": [
     0,
     2,
@@ -184,6 +188,11 @@
     },
     "correlation": 0.695,
     "head_to_head": {
+      "win_pairs": 1289,
+      "market_win_pair_log_loss": 0.3225,
+      "ours_win_pair_log_loss": 0.4222,
+      "win_improvement": -0.09975,
+      "win_improvement_se": 0.01429,
       "pairs": 6163,
       "model_correct": 0.7415,
       "avg3_correct": 0.7055,
@@ -194,6 +203,13 @@
       "coin_flip_log_loss": 0.6931
     },
     "head_to_head_calibrated": {
+      "blend_correct": 0.7896,
+      "blend_pair_log_loss": 0.4466,
+      "win_pairs": 1289,
+      "market_win_pair_log_loss": 0.3225,
+      "ours_win_pair_log_loss": 0.3177,
+      "win_improvement": 0.00478,
+      "win_improvement_se": 0.00176,
       "pairs": 6163,
       "model_correct": 0.7415,
       "avg3_correct": 0.7055,
@@ -204,10 +220,14 @@
       "coin_flip_log_loss": 0.6931
     }
   },
+  "blend_weights": {
+    "a_per_figure_point": 0.0006,
+    "b_market": 0.8968
+  },
   "race_log_loss": {
-    "model": 1.5275,
+    "model": 1.4482,
     "uniform": 2.1794,
     "market": 1.4018,
-    "model_on_market_races": 1.5275
+    "model_on_market_races": 1.4482
   }
 }

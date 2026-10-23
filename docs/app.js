@@ -33,7 +33,9 @@
         vs ±${h.baseline_avg_last3.mae} for "average of last 3"` : "") +
       (h && h.head_to_head && h.head_to_head.pairs ? `, and in ${h.head_to_head.pairs.toLocaleString()} same-race head-to-heads it
         picked the horse that finished ahead ${pct(h.head_to_head.model_correct)} of the time (betting favourite:
-        ${pct(h.head_to_head.market_correct)})` : "") + ".";
+        ${pct(h.head_to_head.market_correct)})` : "") + "." +
+      (race.blend ? ` Win chances blend the model with the morning line (learned weights: ${race.blend[0].toFixed(3)} per figure
+        point, ${race.blend[1].toFixed(2)} × log market chance).` : "");
   };
 
   // ---------- tabs ----------
@@ -108,7 +110,9 @@
     }).join("");
     const intro = isFig(race)
       ? `<p><strong>Expected speed figure ${r.pred_fig?.toFixed(0) ?? "–"} ± ${r.fig_sigma?.toFixed(0) ?? "–"}.</strong>
-         Win chance is the share of 20,000 simulated races this horse wins.</p>
+         ${race.blend ? `Win chance ${pct(r.model_prob)} blends the model (alone: ${pct(r.model_only_prob)}) with the
+         morning line (${pct(r.ml_implied_prob)}), using weights learned from real results.`
+         : "Win chance is the share of 20,000 simulated races this horse wins."}</p>
          <p class="hint">Contributions to the expected figure compared with the average rival in this race (figure points).
          Green raises it, red lowers it. Hover a feature name for its definition.</p>`
       : `<p class="hint">Contributions to the horse's score compared with the average rival in this race (log-odds units).

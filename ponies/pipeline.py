@@ -56,15 +56,21 @@ def _clean(v):
 
 
 def value_flags_allowed(model_info: dict | None) -> tuple[bool, str | None]:
-    """[A-35] Only flag value bets when the model has beaten the market's log
-    loss on unseen races; otherwise 'value' mostly means longshots the model
-    can't actually assess. Returns (allowed, reason shown when not)."""
-    h = (model_info or {}).get("holdout", {})
-    h2h = h.get("head_to_head_calibrated") or h.get("head_to_head") or {}
-    mine, market = h2h.get("model_pair_log_loss"), h2h.get("market_pair_log_loss")
-    if mine is None or market is None:
-        race_ll = (model_info or {}).get("race_log_loss")
-        mine, market = (race_ll or {}).get("model"), (race_ll or {}).get("market")
+    """[A-35] Only flag value bets when the probabilities shown have beaten
+    the market at picking WINNERS on unseen races by more than 2 standard
+    errors. Otherwise "value" mostly means longshots the model can't assess.
+    Returns (allowed, reason shown when not)."""
+    info = model_info or {}
+    h2h = info.get("holdout", {}).get("head_to_head_calibrated") or {}
+    if h2h.get("win_pairs"):
+        gain, se = h2h["win_improvement"], h2h.get("win_improvement_se") or 0.0
+        if gain > 2 * se:
+            return True, None
+        return False, (f"Value flags are off: on {h2h['win_pairs']} unseen winner-vs-rival pairs the probabilities "
+                       f"didn't beat the market at picking winners (log loss {h2h['ours_win_pair_log_loss']} vs "
+                       f"market {h2h['market_win_pair_log_loss']}; needs to be better by more than 2 standard errors).")
+    race_ll = info.get("race_log_loss") or {}
+    mine, market = race_ll.get("model"), race_ll.get("market")
     if mine is None or market is None:
         return False, "Value flags are off: the model hasn't been compared with the market yet."
     if mine >= market:
@@ -86,6 +92,8 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
     df["model_prob"] = model.predict_proba(df)
     if hasattr(model, "predict_fig"):
         df["pred_fig"], df["fig_sigma"] = model.predict_fig(df)
+    if getattr(model, "blend", None) is not None:
+        df["model_only_prob"] = model.predict_model_only(df)
     contrib = model.contributions(df)
     ml_col = "morning_line"
     df["ml_implied_prob"] = market_probabilities(df, ml_col)
@@ -121,6 +129,7 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
                                    and r["has_history"]),
                 "finish_position": _clean(r["finish_position"]),
                 "pred_fig": _clean(r.get("pred_fig")), "fig_sigma": _clean(r.get("fig_sigma")),
+                "model_only_prob": _clean(r.get("model_only_prob")),
                 "features": {f: _clean(r[f]) for f in names},
                 "contributions": {f: _clean(c[f]) for f in names},
             })
@@ -133,6 +142,7 @@ def race_cards(df: pd.DataFrame, model, kind: str, model_info: dict | None = Non
             "race_class": _clean(first["race_class"]), "purse": _clean(first["purse"]),
             "field_size": len(g), "runners": runners,
             "model": model_name, "units": getattr(model, "units", "log-odds"),
+            "blend": list(model.blend) if getattr(model, "blend", None) else None,
             "model_info": model_info, "value_note": value_note,
         })
     return cards

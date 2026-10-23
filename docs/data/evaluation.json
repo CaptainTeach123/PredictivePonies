@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-23T22:55:59+00:00",
+  "generated_at": "2026-10-23T23:06:35+00:00",
   "synthetic_data": true,
   "races": 128,
   "runners": 1158,
@@ -111,28 +111,28 @@
     "race_backtest": {
       "races": 128,
       "log_loss": {
-        "model": 1.5275,
+        "model": 1.4482,
         "uniform": 2.1794,
         "market": 1.4018,
-        "model_on_market_races": 1.5275
+        "model_on_market_races": 1.4482
       },
-      "brier": 0.07917,
+      "brier": 0.07497,
       "top_pick_win_rate": {
-        "model": 0.3906,
+        "model": 0.4766,
         "market_favourite": 0.4844
       },
       "betting_backtest": {
         "model_top_pick": {
           "bets": 128,
-          "wins": 50,
-          "profit": -45.4,
-          "roi": -0.3547
+          "wins": 61,
+          "profit": -37.9,
+          "roi": -0.2961
         },
         "value_bets": {
-          "bets": 734,
-          "wins": 31,
-          "profit": 330.4,
-          "roi": 0.4501,
+          "bets": 726,
+          "wins": 25,
+          "profit": 169.7,
+          "roi": 0.2337,
           "edge_threshold": 0.1
         }
       },
@@ -140,58 +140,72 @@
         {
           "bin_low": 0.0,
           "bin_high": 0.1,
-          "mean_predicted": 0.03224365721997301,
-          "observed_win_rate": 0.022941970310391364,
-          "count": 741
+          "mean_predicted": 0.029237987556836126,
+          "observed_win_rate": 0.030732860520094562,
+          "count": 846
         },
         {
           "bin_low": 0.1,
           "bin_high": 0.2,
-          "mean_predicted": 0.14368532338308457,
-          "observed_win_rate": 0.1691542288557214,
-          "count": 201
+          "mean_predicted": 0.14125202463538802,
+          "observed_win_rate": 0.24166666666666667,
+          "count": 120
         },
         {
           "bin_low": 0.2,
           "bin_high": 0.30000000000000004,
-          "mean_predicted": 0.24364540816326535,
-          "observed_win_rate": 0.3163265306122449,
-          "count": 98
+          "mean_predicted": 0.24606422943594528,
+          "observed_win_rate": 0.11666666666666667,
+          "count": 60
         },
         {
           "bin_low": 0.30000000000000004,
           "bin_high": 0.4,
-          "mean_predicted": 0.3416092592592591,
-          "observed_win_rate": 0.2962962962962963,
-          "count": 54
+          "mean_predicted": 0.34276098821630235,
+          "observed_win_rate": 0.3611111111111111,
+          "count": 36
         },
         {
           "bin_low": 0.4,
           "bin_high": 0.5,
-          "mean_predicted": 0.4442028571428572,
-          "observed_win_rate": 0.34285714285714286,
-          "count": 35
+          "mean_predicted": 0.45355598447700535,
+          "observed_win_rate": 0.5,
+          "count": 24
         },
         {
           "bin_low": 0.5,
           "bin_high": 0.6000000000000001,
-          "mean_predicted": 0.5454472222222222,
-          "observed_win_rate": 0.5,
-          "count": 18
+          "mean_predicted": 0.5386543735284532,
+          "observed_win_rate": 0.46153846153846156,
+          "count": 26
         },
         {
           "bin_low": 0.6000000000000001,
           "bin_high": 0.7000000000000001,
-          "mean_predicted": 0.6446416666666667,
-          "observed_win_rate": 0.8333333333333334,
-          "count": 6
+          "mean_predicted": 0.6467893075709118,
+          "observed_win_rate": 0.4666666666666667,
+          "count": 15
         },
         {
           "bin_low": 0.7000000000000001,
           "bin_high": 0.8,
-          "mean_predicted": 0.73391,
-          "observed_win_rate": 0.8,
-          "count": 5
+          "mean_predicted": 0.7498399365018797,
+          "observed_win_rate": 0.5333333333333333,
+          "count": 15
+        },
+        {
+          "bin_low": 0.8,
+          "bin_high": 0.9,
+          "mean_predicted": 0.8311603164488273,
+          "observed_win_rate": 0.8666666666666667,
+          "count": 15
+        },
+        {
+          "bin_low": 0.9,
+          "bin_high": 1.0,
+          "mean_predicted": 0.903969481714277,
+          "observed_win_rate": 1.0,
+          "count": 1
         }
       ]
     },
