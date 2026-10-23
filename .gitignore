@@ -6,3 +6,5 @@ docs/data/ponies.zip
 # Licensed vendor data: never commit (see DATA_SCHEMA.md)
 data/raw/trackmaster/*
 !data/raw/trackmaster/README.md
+data/raw/formfav/*
+!data/raw/formfav/README.md
