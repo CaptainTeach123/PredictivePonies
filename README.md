@@ -22,6 +22,10 @@ python -m ponies.pipeline            # builds docs/data/*.json and prints the ba
 python -m http.server -d docs 8000   # open http://localhost:8000
 ```
 
+## Predicting an upcoming race (no install)
+
+Open the dashboard and go to **Enter a race**. Fill in the race details and runners, or load an entries XML file, then press **Predict race**. The model runs in your browser with [Pyodide](https://pyodide.org). The first run downloads about 15 MB, which is cached after that. Use **Download as XML** to save the card so it can be added to `data/raw/entries/`.
+
 ## Using real race data
 
 1. Put XML files into `data/raw/results/`, `data/raw/past_performances/` and `data/raw/entries/`. The layout is in [DATA_SCHEMA.md](DATA_SCHEMA.md).

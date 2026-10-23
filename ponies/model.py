@@ -137,7 +137,10 @@ class ConditionalLogit:
 
     @classmethod
     def load(cls, path: Path) -> "ConditionalLogit":
-        d = json.loads(Path(path).read_text())
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ConditionalLogit":
         return cls(
             feature_names=d["feature_names"],
             weights=np.array(d["weights"]),

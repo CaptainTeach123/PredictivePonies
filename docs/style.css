@@ -69,3 +69,28 @@ dl.metrics dt { color: var(--muted); } dl.metrics dd { margin: 0; text-align: ri
 svg text { fill: var(--muted); font-size: 11px; }
 .prose { max-width: 760px; } .pipeline li { margin-bottom: 8px; }
 @media (max-width: 640px) { .hide-sm { display: none; } th, td { padding: 6px; } }
+
+/* ----- Enter a race ----- */
+fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 16px; padding: 12px 16px 16px; }
+legend { font-weight: 600; padding: 0 6px; }
+.field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.field-grid label { display: flex; flex-direction: column; gap: 4px; font-size: .875rem; color: var(--muted); }
+input { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text); min-width: 0; }
+input[aria-invalid="true"] { border-color: var(--neg); }
+#runner-table td { padding: 4px; }
+#runner-table input { width: 100%; }
+#runner-table td:nth-child(2), #runner-table td:nth-child(3), #runner-table td:nth-child(4) { min-width: 150px; }
+#runner-table td:nth-child(5), #runner-table td:nth-child(6), #runner-table td:nth-child(7) { width: 80px; min-width: 70px; }
+#runner-table td:nth-child(8) { width: 64px; min-width: 56px; }
+#runner-table tbody tr { cursor: default; }
+#runner-table tbody tr:hover { background: none; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button.primary, button.secondary, label.secondary { font: inherit; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--surface); border: 1px solid var(--accent); font-weight: 600; }
+button.primary:disabled { opacity: .6; cursor: progress; }
+button.secondary, label.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+#add-runner { margin-top: 8px; }
+.remove { font: inherit; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 4px 8px; }
+label.file:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+#engine-status.error-text { color: var(--neg); }

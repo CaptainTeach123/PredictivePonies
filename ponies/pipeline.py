@@ -8,6 +8,10 @@ Outputs (all in docs/data/, read by docs/index.html):
     predictions.json  win probabilities, rankings, explanations, odds comparison
                       for every race in data/raw/entries/ (plus the test races,
                       so the dashboard can show predicted-vs-actual)
+    history.csv       form history used to build features in the browser
+    roster.json       known horses / jockeys / trainers (form autocomplete)
+    ponies.zip        this package, loaded by the in-browser predictor
+                      (ponies/browser.py via Pyodide); generated, not committed
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,7 +30,7 @@ from . import config, odds
 from .evaluate import evaluate, market_probabilities
 from .features import FEATURES, FEATURE_NAMES, build_features
 from .model import ConditionalLogit
-from .xml_io import load_directory, load_history
+from .xml_io import history_to_csv, load_directory, load_history
 
 
 def chronological_split(feats: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -69,31 +74,58 @@ def race_cards(df: pd.DataFrame, model: ConditionalLogit, kind: str) -> list[dic
             runners.append({
                 "rank": rank,
                 "program": _clean(r["program"]),
-                "horse": r["horse_name"], "horse_id": r["horse_id"],
-                "jockey": r["jockey_name"], "trainer": r["trainer_name"],
+                "horse": _clean(r["horse_name"]), "horse_id": r["horse_id"],
+                "jockey": _clean(r["jockey_name"]), "trainer": _clean(r["trainer_name"]),
                 "post_position": _clean(r["post_position"]),
                 "model_prob": _clean(r["model_prob"]),
                 "fair_odds": odds.fair_odds_string(r["model_prob"]),
-                "morning_line": r[ml_col],
+                "morning_line": _clean(r[ml_col]),
                 "ml_implied_prob": _clean(r["ml_implied_prob"]),
                 "final_odds": r["final_odds"] if isinstance(r["final_odds"], str) else None,
                 "final_implied_prob": _clean(r["final_implied_prob"]),
                 "edge_vs_ml": _clean(r["edge_vs_ml"]),
-                "value_flag": bool(r["edge_vs_ml"] > config.VALUE_EDGE_THRESHOLD),
+                # [A-22] no value flag without form data: imputed "average" features
+                # can make an unknown horse look like a bargain at long odds.
+                "no_history": not r["has_history"],
+                "value_flag": bool(r["edge_vs_ml"] > config.VALUE_EDGE_THRESHOLD and r["has_history"]),
                 "finish_position": _clean(r["finish_position"]),
                 "features": {f: _clean(r[f]) for f in FEATURE_NAMES},
                 "contributions": {f: _clean(c[f]) for f in FEATURE_NAMES},
             })
         cards.append({
             "race_id": race_id, "kind": kind,
-            "date": str(first["date"].date()), "track": first["track"],
+            "date": str(first["date"].date()), "track": _clean(first["track"]),
             "race_number": _clean(first["race_number"]),
             "distance_furlongs": _clean(first["distance_furlongs"]),
-            "surface": first["surface"], "condition": first["condition"],
-            "race_class": first["race_class"], "purse": _clean(first["purse"]),
+            "surface": _clean(first["surface"]), "condition": _clean(first["condition"]),
+            "race_class": _clean(first["race_class"]), "purse": _clean(first["purse"]),
             "field_size": len(g), "runners": runners,
         })
     return cards
+
+
+def build_roster(history: pd.DataFrame) -> dict:
+    """Latest known name/details per horse, jockey and trainer."""
+    h = history.sort_values("date")
+
+    def latest(id_col, name_col, extra=()):
+        rows = h[h[id_col].notna() & h[name_col].notna()].drop_duplicates(id_col, keep="last")
+        return sorted(({"id": r[id_col], "name": r[name_col], **{k: _clean(r[k]) for k in extra}}
+                       for _, r in rows.iterrows()), key=lambda d: d["name"])
+
+    return {
+        "horses": latest("horse_id", "horse_name",
+                         ("age", "sex", "trainer_id", "trainer_name", "date")),
+        "jockeys": latest("jockey_id", "jockey_name"),
+        "trainers": latest("trainer_id", "trainer_name"),
+    }
+
+
+def package_source(path: Path) -> None:
+    """Zip ponies/*.py so the dashboard can import it in Pyodide."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for src in sorted(Path(__file__).parent.glob("*.py")):
+            zf.write(src, f"ponies/{src.name}")
 
 
 def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
@@ -136,7 +168,12 @@ def run(out_dir: Path = config.DASHBOARD_DATA_DIR) -> dict:
                  "feature_descriptions": FEATURES}
     (out_dir / "model.json").write_text(json.dumps(model_doc, indent=2))
     (out_dir / "evaluation.json").write_text(json.dumps({**meta, **metrics}, indent=2))
-    (out_dir / "predictions.json").write_text(json.dumps({**meta, "races": cards}))
+    (out_dir / "predictions.json").write_text(json.dumps({**meta, "races": cards}, allow_nan=False))
+
+    # In-browser predictor inputs
+    history_to_csv(history, out_dir / "history.csv")
+    (out_dir / "roster.json").write_text(json.dumps(build_roster(history)))
+    package_source(out_dir / "ponies.zip")
     return metrics
 
 

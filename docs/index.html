@@ -15,6 +15,7 @@
       <p class="tagline">XML race data → Python features → conditional-logit model → win probabilities</p>
       <nav aria-label="Sections">
         <button type="button" class="tab" aria-selected="true" data-tab="races">Races</button>
+        <button type="button" class="tab" aria-selected="false" data-tab="enter">Enter a race</button>
         <button type="button" class="tab" aria-selected="false" data-tab="model">Model &amp; backtest</button>
         <button type="button" class="tab" aria-selected="false" data-tab="about">How it works</button>
       </nav>
@@ -35,6 +36,7 @@
           <select id="kind-filter">
             <option value="upcoming">Upcoming races</option>
             <option value="backtest">Backtest races (with results)</option>
+            <option value="custom">Races I entered</option>
           </select>
         </label>
         <label>Race
@@ -82,6 +84,61 @@
         <div id="weights"></div></div>
     </section>
 
+    <!-- ===== Enter a race (runs the Python model in the browser via Pyodide) ===== -->
+    <section id="tab-enter" class="panel" hidden>
+      <div class="card">
+        <h2>Enter an upcoming race</h2>
+        <p class="hint">The model runs here in your browser, so there's nothing to install. The first prediction
+          downloads the Python engine (about 15&nbsp;MB, cached afterwards). Start typing a horse, jockey or trainer
+          to pick from the <span id="roster-count">known</span> names in the data. Horses not in the data
+          are treated as first-time starters.</p>
+        <form id="race-form" novalidate>
+          <fieldset>
+            <legend>Race</legend>
+            <div class="field-grid">
+              <label>Track code <input name="track" required maxlength="12" placeholder="e.g. SAR"></label>
+              <label>Date <input name="date" type="date" required></label>
+              <label>Race # <input name="number" type="number" min="1" value="1" required></label>
+              <label>Distance (furlongs) <input name="distance" type="number" step="0.5" min="2" value="6" required></label>
+              <label>Surface
+                <select name="surface"><option>dirt</option><option>turf</option><option>synthetic</option></select></label>
+              <label>Condition
+                <select name="condition">
+                  <option>fast</option><option>good</option><option>sloppy</option><option>muddy</option>
+                  <option>firm</option><option>yielding</option><option>soft</option></select></label>
+              <label>Class <input name="class" placeholder="e.g. claiming"></label>
+              <label>Purse ($) <input name="purse" type="number" min="0" step="1000" placeholder="25000"></label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>Runners</legend>
+            <div class="table-scroll">
+              <table id="runner-table">
+                <thead><tr>
+                  <th scope="col">#</th><th scope="col">Horse</th><th scope="col">Jockey</th>
+                  <th scope="col">Trainer</th><th scope="col">M/L odds</th><th scope="col">Weight</th>
+                  <th scope="col">Age</th><th scope="col">Sex</th><th scope="col"><span class="sr-only">Remove</span></th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <button type="button" id="add-runner" class="secondary">+ Add runner</button>
+            <p class="hint">Rows are in post-position order. Odds are US style (5-2, 7/2, 8 for 8-1, EVEN).</p>
+          </fieldset>
+          <div class="actions">
+            <button type="submit" class="primary">Predict race</button>
+            <button type="button" id="download-xml" class="secondary">Download as XML</button>
+            <label class="file secondary">Load an entries XML file…
+              <input type="file" id="xml-file" accept=".xml,text/xml" class="sr-only"></label>
+          </div>
+          <p id="engine-status" class="hint" role="status" aria-live="polite"></p>
+        </form>
+        <datalist id="horse-list"></datalist>
+        <datalist id="jockey-list"></datalist>
+        <datalist id="trainer-list"></datalist>
+      </div>
+    </section>
+
     <!-- ===== About ===== -->
     <section id="tab-about" class="panel" hidden>
       <div class="card prose">
@@ -90,7 +147,9 @@
           <li><strong>Horse racing XML files</strong> — race entries, past performances and historical results (<code>ponies/xml_io.py</code>).</li>
           <li><strong>Python data processing</strong> — point-in-time features: speed figures, recent form, distance/surface/condition fit, jockey and trainer win rates (<code>ponies/features.py</code>).</li>
           <li><strong>Machine-learning model</strong> — a conditional logit (softmax within each race) trained on past races and tested on later races it never saw (<code>ponies/model.py</code>, <code>ponies/evaluate.py</code>).</li>
-          <li><strong>Race prediction dashboard</strong> — this page, reading JSON from <code>docs/data/</code> (<code>ponies/pipeline.py</code>).</li>
+          <li><strong>Race prediction dashboard</strong> — this page, reading JSON from <code>docs/data/</code> (<code>ponies/pipeline.py</code>).
+            The <em>Enter a race</em> tab runs the same Python code in your browser with
+            <a href="https://pyodide.org">Pyodide</a> (<code>ponies/browser.py</code>).</li>
         </ol>
         <p>Every modelling assumption has an ID like <code>[A-03]</code> listed in
           <a href="https://github.com/CaptainTeach123/PredictivePonies/blob/HEAD/ASSUMPTIONS.md">ASSUMPTIONS.md</a>.
@@ -101,5 +160,6 @@
     </section>
   </main>
   <script src="app.js"></script>
+  <script src="predict.js"></script>
 </body>
 </html>

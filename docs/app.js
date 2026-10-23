@@ -32,7 +32,7 @@
     history.replaceState(null, "", "#" + btn.dataset.tab);
   }));
   const fromHash = location.hash.slice(1);
-  if (["races", "model", "about"].includes(fromHash)) selectTab(fromHash);
+  if (["races", "enter", "model", "about"].includes(fromHash)) selectTab(fromHash);
 
   // ---------- races ----------
   const kindSel = $("#kind-filter"), raceSel = $("#race-select");
@@ -52,14 +52,14 @@
     const done = race.kind === "backtest";
     document.querySelectorAll(".result-col").forEach((c) => (c.hidden = !done));
     $("#race-header").innerHTML = `<h2>${esc(race.track)} · Race ${race.race_number} · ${esc(race.date)}</h2>
-      <p>${race.distance_furlongs}f ${esc(race.surface)} (${esc(race.condition)}) · ${esc(race.race_class)}
-      · purse $${(race.purse ?? 0).toLocaleString()} · ${race.field_size} runners</p>`;
+      <p>${[`${race.distance_furlongs}f ${esc(race.surface)} (${esc(race.condition)})`, esc(race.race_class),
+        race.purse ? `purse $${race.purse.toLocaleString()}` : "", `${race.field_size} runners`].filter(Boolean).join(" · ")}</p>`;
     const maxP = Math.max(...race.runners.map((r) => r.model_prob));
     tbody.innerHTML = race.runners.map((r, i) => `
       <tr tabindex="0" data-i="${i}" aria-selected="false" class="${r.finish_position === 1 ? "winner" : ""}">
         <td>${r.rank}</td>
         <td>${esc(r.program)}</td>
-        <td>${esc(r.horse)}${r.value_flag ? ' <span title="Value: edge above threshold" aria-label="value bet">★</span>' : ""}</td>
+        <td>${esc(r.horse)}${r.no_history ? ' <span class="small">no form data</span>' : ""}${r.value_flag ? ' <span title="Value: edge above threshold" aria-label="value bet">★</span>' : ""}</td>
         <td class="hide-sm">${esc(r.jockey)}<span class="small">${esc(r.trainer)}</span></td>
         <td><div class="bar"><span class="fill" style="width:${(80 * r.model_prob) / maxP}px"></span>${pct(r.model_prob)}</div></td>
         <td class="num">${esc(r.fair_odds)}</td>
@@ -97,6 +97,22 @@
       <div class="contrib">${rows}</div>
       <p class="hint">Market check: morning line ${esc(r.morning_line ?? "–")} implies ${pct(r.ml_implied_prob)}${r.final_odds ? `; final odds ${esc(r.final_odds)} implied ${pct(r.final_implied_prob)}` : ""}.</p>`;
   }
+
+  // Called by predict.js after an in-browser prediction.
+  window.ponies = {
+    roster: null,
+    showCustomRaces(cards) {
+      const ids = new Set(cards.map((c) => c.race_id));
+      preds.races = preds.races.filter((r) => !(r.kind === "custom" && ids.has(r.race_id))).concat(cards);
+      kindSel.value = "custom";
+      fillRaces();
+      raceSel.value = cards[0].race_id;
+      showRace();
+      selectTab("races");
+      history.replaceState(null, "", "#races");
+      $("#race-header").scrollIntoView({ behavior: "smooth" });
+    },
+  };
 
   kindSel.addEventListener("change", fillRaces);
   raceSel.addEventListener("change", showRace);

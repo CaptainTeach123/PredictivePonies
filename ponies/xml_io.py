@@ -83,7 +83,10 @@ def _starter_attrs(st: ET.Element) -> dict:
 
 def parse_card(path: Path, source: str) -> list[dict]:
     """Parse a results or entries file (same layout; entries lack outcomes)."""
-    root = ET.parse(path).getroot()
+    return parse_card_root(ET.parse(path).getroot(), source)
+
+
+def parse_card_root(root: ET.Element, source: str) -> list[dict]:
     track, date = root.get("track"), root.get("date")
     rows = []
     for race in root.iter("race"):
@@ -127,6 +130,34 @@ def parse_past_performances(path: Path) -> list[dict]:
                 "source": "pp",
             })
     return rows
+
+
+def entries_from_text(xml_text: str) -> pd.DataFrame:
+    """Entries XML supplied as a string (used by the in-browser predictor)."""
+    return _to_frame(parse_card_root(ET.fromstring(xml_text), "entry"))
+
+
+# Columns the feature builder needs from history (features._index_history).
+HISTORY_COLUMNS = [
+    "date", "horse_id", "jockey_id", "trainer_id", "distance_furlongs", "surface",
+    "condition", "purse", "field_size", "finish_position", "speed_figure",
+]
+
+
+def history_to_csv(history: pd.DataFrame, path: Path) -> None:
+    out = history[HISTORY_COLUMNS].copy()
+    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    out.to_csv(path, index=False)
+
+
+def history_from_csv(source) -> pd.DataFrame:
+    """Inverse of ``history_to_csv``. ``source`` is a path or file-like object."""
+    df = pd.read_csv(source, dtype=str, keep_default_na=False)
+    for col in NUMERIC_COLUMNS:
+        if col in df:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"])
+    return df
 
 
 def _to_frame(rows: Iterable[dict]) -> pd.DataFrame:

@@ -32,6 +32,7 @@ the before/after backtest numbers in the *Change log* at the bottom.
 | A-19 | Live predictions use a model **refit on all history** (the backtest model is trained on the training split only) | `pipeline.run` | – | Uses the latest form. The reported backtest therefore describes a slightly different (less-trained) model. |
 | A-20 | If a start appears in both a result chart and a PP file, the **result chart wins** | `xml_io.load_history` | – | Result charts are the official record. Matching is by `race_id` + `horse_id`, so IDs must be consistent across files. |
 | A-21 | **Scratched** runners are dropped and not counted in `field_size` | `xml_io.parse_card` | – | They didn't run. |
+| A-22 | Runners with **no prior starts** in the data are never flagged as value bets, and the dashboard labels them "no form data" | `pipeline.race_cards` | – | Their features are imputed as average [A-07], which can make a debut horse at long odds look like a huge edge. |
 
 ## Known limitations / ideas for whoever improves this next
 
