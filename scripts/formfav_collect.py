@@ -185,11 +185,22 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
             data["meeting"] = {k: m.get(k) for k in ("track", "slug", "country")}
             stats["meetings"] += 1
             past = d < today
-            # past races: fetch once; upcoming races: refresh each run
+            # past races: fetch once; upcoming races: refresh each run. Prices
+            # last fetched before the start are fetched again so the stored
+            # movement history reaches the jump [A-42].
+            def have(kind, n):
+                if n not in data[kind]:
+                    return False
+                if kind != "prices":
+                    return True
+                start = (data["cards"].get(n) or {}).get("startTime") or data[kind][n].get("startTime")
+                got = data["fetched"].get(f"price:{n}")
+                return not (start and got and datetime.fromisoformat(got) < datetime.fromisoformat(start.replace("Z", "+00:00")))
+
             jobs = [(kind, tool, str(race["raceNumber"]))
                     for race in m.get("races", []) if not race.get("abandoned")
                     for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices"))
-                    if not (past and str(race["raceNumber"]) in data[kind])]
+                    if not (past and have(kind, str(race["raceNumber"])))]
             jobs = jobs[:max(0, max_calls - client.calls)]
 
             def fetch(job, slug=m["slug"], day=d.isoformat()):

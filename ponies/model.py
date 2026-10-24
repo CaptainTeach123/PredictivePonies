@@ -55,6 +55,7 @@ class ConditionalLogit:
     impute_values: np.ndarray | None = None
     means: np.ndarray | None = None
     stds: np.ndarray | None = None
+    l2: float | None = None  # None -> config.L2_PENALTY [A-09]
     history: list[float] = field(default_factory=list)
 
     # ----- preprocessing ---------------------------------------------------
@@ -82,12 +83,13 @@ class ConditionalLogit:
         codes, n_races = _race_codes(df["race_id"])
         y = win_targets(df["won"].to_numpy(), codes, n_races)
         Z = self._prepare(df, fit=True)
+        l2 = config.L2_PENALTY if self.l2 is None else self.l2
 
         def loss_and_grad(w):
             p = race_softmax(Z @ w, codes, n_races)
             loss = (-np.sum(y * np.log(p + 1e-15)) / n_races
-                    + 0.5 * config.L2_PENALTY * w @ w)
-            grad = Z.T @ (p - y) / n_races + config.L2_PENALTY * w
+                    + 0.5 * l2 * w @ w)
+            grad = Z.T @ (p - y) / n_races + l2 * w
             return loss, grad
 
         w = np.zeros(Z.shape[1])

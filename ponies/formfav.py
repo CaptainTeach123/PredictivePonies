@@ -152,18 +152,90 @@ def runner_features(runner: dict, card: dict) -> dict:
     }
 
 
-def market_odds(prices: dict | None) -> dict:
-    """[A-42] Pre-race market price per runner number: the median across
-    bookmakers of the fixed-odds 'close' (last price before the jump), falling
-    back to the current 'win' price for races not yet run. Decimal odds."""
+def _margin(v) -> float:
+    """Lengths behind the winner; FormFav gives a number as text."""
+    x = _num(v)
+    return min(x, 20.0) if not math.isnan(x) else math.nan
+
+
+def extra_features(runner: dict, card: dict) -> dict:
+    """Candidate inputs [A-45], evaluated by scripts/formfav_experiments.py
+    before any is promoted into FF_FEATURES."""
+    stats = runner.get("stats") or {}
+    cls = runner.get("classProfile") or {}
+    fit = runner.get("raceClassFit") or {}
+    form = (runner.get("last20Starts") or "").upper()
+    prep = form.rsplit("X", 1)[-1] if "X" in form else form
+    fins = finishes(form)
+    decos = runner.get("decorators") or []
+    sent = sum(1 if d.get("sentiment") == "+" else -1 if d.get("sentiment") == "-" else 0 for d in decos)
+    style = ((runner.get("speedMap") or {}).get("runningStyle") or "").upper()
+    return {
+        "place_rate_distance": _rate(stats.get("distance"), "places"),
+        "place_rate_track": _rate(stats.get("track"), "places"),
+        "place_rate_condition": _rate((stats.get("conditions") or {}).get(condition_bucket(card.get("condition")) or ""), "places"),
+        "track_distance_win_rate": _rate(stats.get("trackDistance")),
+        "peak_rating_gap": _num(cls.get("peakRating")) - _num(cls.get("currentRating")),
+        "best_class_won_rel": _num(cls.get("highestClassWon")) - _num(fit.get("raceClassRating")),
+        "in_optimal_range": float(bool(fit.get("withinOptimalRange"))) if fit else math.nan,
+        "runs_this_prep": float(sum(c.isdigit() for c in prep)),
+        "best_recent_finish": float(min(fins[-3:])) if fins else math.nan,
+        "avg_finish_last6": sum(fins[-6:]) / len(fins[-6:]) if fins else math.nan,
+        "decorator_sentiment": float(sent),
+        "leader_style": 1.0 if style == "L" else 0.0,
+        "decorators": ",".join(sorted(f"{d.get('type')}{d.get('sentiment') or ''}" for d in decos)),
+    }
+
+
+def _when(ts: str | None) -> pd.Timestamp | None:
+    try:
+        return pd.Timestamp(ts).tz_convert("UTC") if ts else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _quote_before(q: dict, cutoff: pd.Timestamp | None) -> float | None:
+    """[A-42] A bookmaker's last fixed price strictly before ``cutoff``.
+    FormFav's 'close' can be an in-running or post-race quote (seen: 451 for a
+    beaten horse a minute after the start), so with a start time we replay the
+    movement history instead. No movement before the cutoff -> None."""
+    moves = q.get("movements") or []
+    if cutoff is not None and moves:
+        before = [m for m in moves if (t := _when(m.get("at"))) is not None and t < cutoff]
+        price = before[-1].get("price") if before else None
+    elif cutoff is not None and (t := _when(q.get("capturedAt"))) is not None and t >= cutoff:
+        price = None  # captured after the cutoff and no history to replay
+    else:
+        price = q.get("close") or q.get("win")
+    return float(price) if isinstance(price, (int, float)) and price > 1 else None
+
+
+def _quotes(prices: dict | None, minutes_before: float = 0.0) -> dict:
+    """runner number -> sorted fixed-odds quotes across bookmakers at
+    (scheduled start - minutes_before)."""
+    start = _when((prices or {}).get("startTime"))
+    cutoff = start - pd.Timedelta(minutes=minutes_before) if start is not None else None
     out = {}
     for r in (prices or {}).get("runners", []):
-        quotes = [q.get("close") or q.get("win") for q in r.get("prices", [])
-                  if q.get("marketType", "fixed") == "fixed"]
-        quotes = sorted(float(x) for x in quotes if isinstance(x, (int, float)) and x > 1)
-        if quotes:
-            out[r.get("number")] = quotes[len(quotes) // 2]
+        qs = [_quote_before(q, cutoff) for q in r.get("prices", [])
+              if q.get("marketType", "fixed") == "fixed"]
+        qs = sorted(x for x in qs if x is not None)
+        if qs:
+            out[r.get("number")] = qs
     return out
+
+
+def market_odds(prices: dict | None, minutes_before: float = 0.0) -> dict:
+    """[A-42] Pre-race market price per runner number: the median across
+    bookmakers of the last fixed-odds price before the scheduled start (or
+    ``minutes_before`` it); the current price for races not yet run. Decimal."""
+    return {n: qs[len(qs) // 2] for n, qs in _quotes(prices, minutes_before).items()}
+
+
+def market_best(prices: dict | None, minutes_before: float = 0.0) -> dict:
+    """[A-44] Best (highest) fixed price across bookmakers before the start:
+    the price a bettor who shops around actually gets."""
+    return {n: qs[-1] for n, qs in _quotes(prices, minutes_before).items()}
 
 
 def market_open(prices: dict | None) -> dict:
@@ -188,7 +260,11 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
     if card.get("abandoned"):
         return []
     placings = {p.get("number"): p for p in (result or {}).get("placings", [])}
-    market, opening = market_odds(prices), market_open(prices)
+    if prices and not prices.get("startTime") and card.get("startTime"):
+        prices = {**prices, "startTime": card["startTime"]}
+    market, opening, best = market_odds(prices), market_open(prices), market_best(prices)
+    early = market_odds(prices, minutes_before=30)
+    books = {n: len(q) for n, q in _quotes(prices).items()}
     runners = [r for r in card.get("runners", [])
                if not r.get("scratched") and not placings.get(r.get("number"), {}).get("scratched")]
     track = slug(card["track"])
@@ -217,6 +293,11 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
             "price_move": (math.log(opening[r.get("number")] / market[r.get("number")])
                            if r.get("number") in market and r.get("number") in opening else math.nan),
             "final_odds": f"{sp - 1:.2f}" if sp > 1 else None,
+            "market_best": best.get(r.get("number"), math.nan),       # [A-44] decimal
+            "market_t30": early.get(r.get("number"), math.nan),       # 30 min before, decimal
+            "n_books": books.get(r.get("number"), 0),
+            "start_time": card.get("startTime") or (prices or {}).get("startTime"),
+            "margin": _margin(p.get("margin")) if result else math.nan,
             "finish_position": pos,
             "distance_furlongs": furlongs(card.get("distance")),
             "surface": surface_for(card["track"], card.get("condition")),
@@ -224,6 +305,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
             "race_class": card.get("raceClass"), "purse": _num(card.get("prizeMoney")),
             "field_size": n, "sex": _SEX.get(sex.lower(), sex[:1].upper()) if sex else None,
             **runner_features(r, card),
+            **extra_features(r, card),
             "barrier_rel": (_num(r.get("barrier")) - 1) / (n - 1) if n > 1 else 0.5,
             "weight_vs_field": w - mean_w if not math.isnan(w) else 0.0,
             "won": (float(pos == 1) if result and p.get("position") is not None else math.nan),
@@ -243,4 +325,35 @@ def load_store(directory: Path) -> pd.DataFrame:
             res = results.get(card["raceNumber"])
             final = res if res and res.get("resultStatus") == "final" else None
             rows += race_rows(card, final, prices.get(str(card["raceNumber"])))
-    return pd.DataFrame(rows)
+    return add_store_history(pd.DataFrame(rows))
+
+
+STORE_HISTORY = ("prev_margin", "prev_market_logp", "prev_won", "days_since_prev")
+
+
+def add_store_history(df: pd.DataFrame) -> pd.DataFrame:
+    """[A-46] Each runner's previous run that is also in the store (strictly
+    earlier date): lengths beaten, the market's view then (log of field size x
+    implied win probability: 0 = an average chance) and days since. Missing
+    when the horse hasn't run in the stored window."""
+    if df.empty:
+        return df
+    df = df.copy()
+    dec = df["morning_line"].map(lambda v: _num(v) + 1)
+    inv = 1 / dec
+    p = inv / inv.groupby(df["race_id"]).transform("sum")
+    done = df["won"].notna()
+    df["_mk"] = (p * df["field_size"]).map(lambda x: math.log(x) if x > 0 else math.nan).where(done)
+    df["_mg"] = df["margin"].where(done)
+    df["_won"] = df["won"].where(done)
+    df["_dt"] = df["date"].where(done)
+    df = df.sort_values(["horse_id", "date", "race_id"])
+    g = df.groupby("horse_id")
+    # last completed run on an earlier date (same-day duplicates can't leak:
+    # shift then forward-fill only carries values from earlier rows)
+    for src, dst in (("_mg", "prev_margin"), ("_mk", "prev_market_logp"), ("_won", "prev_won"), ("_dt", "_prev_dt")):
+        df[dst] = g[src].transform(lambda s: s.shift(1).ffill())
+    same_day = df["_prev_dt"] == df["date"]
+    df.loc[same_day, ["prev_margin", "prev_market_logp", "prev_won", "_prev_dt"]] = math.nan
+    df["days_since_prev"] = (df["date"] - df["_prev_dt"]).dt.days
+    return df.drop(columns=["_mk", "_mg", "_won", "_dt", "_prev_dt"]).sort_index()

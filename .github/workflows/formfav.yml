@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "probe = find the working endpoint; collect = fetch data + train; train = train only"
+        description: "probe = find the working endpoint; collect = fetch data + train; train = train only; experiment = compare model variants"
         type: choice
-        options: [collect, train, probe]
+        options: [collect, train, experiment, probe]
         default: probe
       days_back:
         description: "Past days to fill (max 29)"
@@ -51,7 +51,7 @@ jobs:
         run: python scripts/formfav_collect.py --probe
 
       - name: Restore store
-        if: github.event_name == 'schedule' || inputs.mode == 'collect' || inputs.mode == 'train'
+        if: github.event_name == 'schedule' || inputs.mode != 'probe'
         uses: actions/cache/restore@v4
         with:
           path: data/raw/formfav
@@ -72,6 +72,12 @@ jobs:
         run: |
           pip install -q -r requirements.txt
           python scripts/formfav_train.py --diagnose --predict data/raw/formfav/predictions/latest.json
+
+      - name: Compare model variants (summary numbers only)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'experiment'
+        run: |
+          pip install -q -r requirements.txt
+          python scripts/formfav_experiments.py
 
       - name: Save store
         if: always() && (github.event_name == 'schedule' || inputs.mode == 'collect' || inputs.mode == 'train')

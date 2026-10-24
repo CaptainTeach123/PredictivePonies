@@ -57,3 +57,32 @@ def test_market_price_and_move():
     assert rows["Nickibi"]["morning_line"] == "12.00"            # median fixed close 13 (tote ignored)
     assert rows["Nickibi"]["price_move"] > 0                      # firmed from 21 to 13
     assert abs(rows["Satoshi"]["price_move"] - math.log(6 / 8)) < 1e-12   # drifted
+
+
+def test_market_ignores_quotes_after_the_start():
+    """[A-42] 'close' can be an in-running quote; replay movements up to the start."""
+    from ponies.formfav import market_best, market_odds
+    mv = lambda at, px: {"price": px, "at": at}
+    prices = {"startTime": "2026-10-22T05:00:00Z", "runners": [{"number": 1, "prices": [
+        {"marketType": "fixed", "open": 13, "close": 451,
+         "movements": [mv("2026-10-22T04:00:00Z", 10), mv("2026-10-22T04:59:00Z", 13), mv("2026-10-22T05:02:30Z", 451)]},
+        {"marketType": "fixed", "open": 10, "close": 12, "movements": [mv("2026-10-22T04:58:00Z", 12)]},
+        {"marketType": "fixed", "open": 9, "close": 11, "movements": [mv("2026-10-22T04:30:00Z", 11)]}]}]}
+    assert market_odds(prices) == {1: 12.0} and market_best(prices) == {1: 13.0}
+    assert market_odds(prices, minutes_before=30) == {1: 10.0}
+
+
+def test_store_history_uses_earlier_runs_only():
+    import pandas as pd
+    from ponies.formfav import add_store_history
+    df = pd.DataFrame({
+        "race_id": ["a", "a", "b", "b", "c", "c"], "horse_id": ["H", "J", "H", "J", "H", "K"],
+        "date": pd.to_datetime(["2026-10-01"] * 2 + ["2026-10-08"] * 2 + ["2026-10-20"] * 2),
+        "morning_line": ["1.00", "1.00", "3.00", "0.33", "1.0", "1.0"], "field_size": [2] * 6,
+        "margin": [0.0, 2.0, 4.0, 0.0, None, None], "won": [1, 0, 0, 1, None, None]})
+    out = add_store_history(df)
+    h = out[out["horse_id"] == "H"].sort_values("date")
+    assert math.isnan(h["prev_margin"].iloc[0]) and h["prev_margin"].iloc[1] == 0.0 and h["prev_margin"].iloc[2] == 4.0
+    assert h["days_since_prev"].iloc[2] == 12 and h["prev_won"].iloc[1] == 1
+    assert abs(h["prev_market_logp"].iloc[1]) < 1e-12                  # evens in a 2-horse race = average chance
+    assert math.isnan(out[out["horse_id"] == "K"]["prev_margin"].iloc[0])
