@@ -30,7 +30,9 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -59,6 +61,7 @@ class McpClient:
         self.session: str | None = None
         self.calls = 0
         self._id = 0
+        self._lock = threading.Lock()
 
     def _request(self, payload: dict) -> dict | None:
         url, headers = self.url, {"Content-Type": "application/json",
@@ -81,8 +84,10 @@ class McpClient:
             return json.loads(body) if body.strip() else None
 
     def _rpc(self, method: str, params: dict) -> dict:
-        self._id += 1
-        msg = self._request({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params})
+        with self._lock:
+            self._id += 1
+            rid = self._id
+        msg = self._request({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         if not msg or "error" in msg:
             raise FormFavError(f"{method}: {(msg or {}).get('error', 'empty response')}")
         return msg["result"]
@@ -100,7 +105,8 @@ class McpClient:
         """Call a FormFav tool; returns its JSON payload's "result" object."""
         for attempt in range(5):
             try:
-                self.calls += 1
+                with self._lock:
+                    self.calls += 1
                 res = self._rpc("tools/call", {"name": name, "arguments": args})
                 break
             except urllib.error.HTTPError as e:
@@ -155,7 +161,8 @@ def _save(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def collect(client: McpClient, days: list[date], countries: set[str], max_calls: int, pause: float) -> dict:
+def collect(client: McpClient, days: list[date], countries: set[str], max_calls: int, pause: float,
+            workers: int = 4) -> dict:
     """Fill the store for ``days``. Re-runs only fetch what's missing or stale:
     results until 'final'; cards/prices of upcoming races are refreshed."""
     stats = {"meetings": 0, "cards": 0, "prices": 0, "results_final": 0, "errors": 0}
@@ -178,24 +185,28 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
             data["meeting"] = {k: m.get(k) for k in ("track", "slug", "country")}
             stats["meetings"] += 1
             past = d < today
-            for race in m.get("races", []):
-                if client.calls >= max_calls:
-                    break
-                n = str(race["raceNumber"])
-                if race.get("abandoned"):
-                    continue
-                for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices")):
-                    # past races: fetch once; upcoming races: refresh each run
-                    if past and n in data[kind]:
-                        continue
+            # past races: fetch once; upcoming races: refresh each run
+            jobs = [(kind, tool, str(race["raceNumber"]))
+                    for race in m.get("races", []) if not race.get("abandoned")
+                    for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices"))
+                    if not (past and str(race["raceNumber"]) in data[kind])]
+            jobs = jobs[:max(0, max_calls - client.calls)]
+
+            def fetch(job, slug=m["slug"], day=d.isoformat()):
+                kind, tool, n = job
+                time.sleep(pause)
+                return job, client.tool(tool, date=day, track=slug, race=int(n))
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for fut in [pool.submit(fetch, j) for j in jobs]:
                     try:
-                        data[kind][n] = client.tool(tool, date=d.isoformat(), track=m["slug"], race=int(n))
+                        (kind, tool, n), payload = fut.result()
+                        data[kind][n] = payload
                         data["fetched"][f"{kind[:-1]}:{n}"] = now.isoformat(timespec="seconds")
                         stats[kind] += 1
                     except Exception as e:  # noqa: BLE001
                         stats["errors"] += 1
-                        print(f"{d} {m['slug']} R{n} {tool}: {type(e).__name__}")
-                    time.sleep(pause)
+                        print(f"{d} {m['slug']} {type(e).__name__}")
             res = data.get("results") or {}
             finished = res.get("races") and all(r.get("resultStatus") in ("final", "abandoned") for r in res["races"])
             if past and not finished and client.calls < max_calls:
@@ -231,7 +242,8 @@ def main() -> int:
     ap.add_argument("--days-ahead", type=int, default=1, help="future days (cards + live odds)")
     ap.add_argument("--countries", default="au", help="comma-separated FormFav country codes")
     ap.add_argument("--max-calls", type=int, default=2500, help="stop after this many API calls")
-    ap.add_argument("--pause", type=float, default=0.3, help="seconds between calls")
+    ap.add_argument("--pause", type=float, default=0.3, help="seconds before each call, per worker")
+    ap.add_argument("--workers", type=int, default=4, help="parallel requests within a meeting")
     a = ap.parse_args()
 
     key = os.environ.get("FORMFAV_API_KEY", "").strip()
@@ -248,7 +260,7 @@ def main() -> int:
     # oldest first, so the days about to leave the 30-day window are saved first
     days = [today - timedelta(days=i) for i in range(min(a.days_back, 29), 0, -1)] + \
            [today + timedelta(days=i) for i in range(0, a.days_ahead + 1)]
-    stats = collect(client, days, set(a.countries.split(",")), a.max_calls, a.pause)
+    stats = collect(client, days, set(a.countries.split(",")), a.max_calls, a.pause, a.workers)
     print("this run:", json.dumps({**stats, "api_calls": client.calls}))
     print("store:   ", json.dumps(store_summary()))
     return 0
