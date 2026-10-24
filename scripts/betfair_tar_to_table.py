@@ -47,29 +47,40 @@ def main() -> int:
             written += len(buf)
             header, buf = False, []
 
-    with tarfile.open(a.tar, mode="r|*") as tar:
-        for member in tar:
-            if not member.isfile() or not member.name.endswith(".bz2"):
-                continue
-            files += 1
-            try:
-                raw = bz2.decompress(tar.extractfile(member).read())
-                rows = parse_market(io.StringIO(raw.decode("utf-8", errors="replace")))
-            except Exception:  # noqa: BLE001
-                bad += 1
-                continue
-            for r in rows:
-                types[r["market_type"]] = types.get(r["market_type"], 0) + 1
-                countries[r["country"]] = countries.get(r["country"], 0) + 1
-            buf += [r for r in rows if r["market_type"] in keep_types
-                    and (keep_countries is None or r["country"] in keep_countries)]
-            if len(buf) > 200_000:
-                flush()
-            if files % 20_000 == 0:
-                print(json.dumps({"files": files, "rows_kept": written + len(buf)}), flush=True)
+    truncated, last = False, None
+    tar = tarfile.open(a.tar, mode="r|*")
+    members = iter(tar)
+    while True:
+        try:
+            member = next(members)
+        except StopIteration:
+            break
+        except tarfile.ReadError:  # archive cut short: keep everything read so far
+            truncated = True
+            break
+        if not member.isfile() or not member.name.endswith(".bz2"):
+            continue
+        files += 1
+        last = member.name
+        try:
+            raw = bz2.decompress(tar.extractfile(member).read())
+            rows = parse_market(io.StringIO(raw.decode("utf-8", errors="replace")))
+        except Exception:  # noqa: BLE001
+            bad += 1
+            continue
+        for r in rows:
+            types[r["market_type"]] = types.get(r["market_type"], 0) + 1
+            countries[r["country"]] = countries.get(r["country"], 0) + 1
+        buf += [r for r in rows if r["market_type"] in keep_types
+                and (keep_countries is None or r["country"] in keep_countries)]
+        if len(buf) > 200_000:
+            flush()
+        if files % 20_000 == 0:
+            print(json.dumps({"files": files, "rows_kept": written + len(buf)}), flush=True)
     flush()
     top = lambda d: dict(sorted(d.items(), key=lambda kv: -kv[1])[:12])
-    print(json.dumps({"files": files, "unreadable": bad, "rows_kept": written,
+    print(json.dumps({"files": files, "unreadable": bad, "rows_kept": written, "archive_truncated": truncated,
+                      "last_file": last,
                       "runner_rows_by_market_type": top(types), "runner_rows_by_country": top(countries)}))
     return 0
 
