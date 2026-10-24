@@ -79,7 +79,40 @@ def main() -> int:
         out["halves_roi"] = {c[4:]: [summary(h[c].to_numpy(dtype=float)).get("roi")
                                      for h in (g[g["date"] < mid], g[g["date"] >= mid])] for c in cols}
         print(json.dumps(out))
+    calibration(df, mid)
     return 0
+
+
+BANDS = [1.0, 2.0, 3.0, 4.5, 6.5, 10.0, 15.0, 25.0, 1e9]
+
+
+def calibration(df: pd.DataFrame, mid) -> None:
+    """[A-52] Price-band calibration: how often horses at each price actually
+    win vs the chance the price implies (proportional and Shin de-margining),
+    and the return at the best price, overall and per segment. A cell counts
+    as value only if its return is > 2 SE above zero in BOTH halves."""
+    df = df.copy()
+    df["band"] = pd.cut(df["dec"], BANDS, right=False,
+                        labels=[f"{lo:g}-{hi:g}" if hi < 1e9 else f"{lo:g}+" for lo, hi in zip(BANDS, BANDS[1:])])
+    df["p_prop"] = np.exp(df["mk_logp"])
+    df["p_shin"] = np.exp(df["shin_logp"])
+    segments = {"all": np.ones(len(df), bool)} | {k[4:]: df[k].to_numpy() == 1 for k in df if k.startswith("seg_")}
+    flagged = []
+    for seg, mask in segments.items():
+        rows = []
+        for band, g in df[mask].groupby("band", observed=True):
+            r = g["ret_win_best"].to_numpy(dtype=float)
+            halves = [g[g["date"] < mid]["ret_win_best"], g[g["date"] >= mid]["ret_win_best"]]
+            se = lambda x: x.std(ddof=1) / math.sqrt(len(x)) if len(x) > 1 else math.inf
+            cell = {"band": str(band), "runners": int(len(g)), "strike": round(float(g["won"].mean()), 4),
+                    "implied_prop": round(float(g["p_prop"].mean()), 4), "implied_shin": round(float(g["p_shin"].mean()), 4),
+                    "roi_best": round(float(r.mean()), 4), "roi_se": round(float(se(r)), 4),
+                    "roi_halves": [round(float(h.mean()), 4) if len(h) else None for h in halves]}
+            rows.append(cell)
+            if all(len(h) > 1 and h.mean() > 2 * se(h) for h in halves):
+                flagged.append(f"{seg}:{band}")
+        print(json.dumps({"calibration_segment": seg, "bands": rows}))
+    print(json.dumps({"value_cells_both_halves_over_2se": flagged}))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ TAG = re.compile(r"\[A-(\d{2})\]")
 
 def test_registry_matches_code():
     code_ids = set()
-    for path in list((ROOT / "ponies").glob("*.py")):
+    for path in list((ROOT / "ponies").glob("*.py")) + list((ROOT / "scripts").glob("*.py")):
         code_ids |= set(TAG.findall(path.read_text()))
     registry_ids = set(re.findall(r"^\|\s*A-(\d{2})\s*\|", (ROOT / "ASSUMPTIONS.md").read_text(), re.M))
     assert code_ids - registry_ids == set(), "IDs used in code but missing from ASSUMPTIONS.md"

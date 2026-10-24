@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from ponies import config  # noqa: E402
+from ponies import config, odds  # noqa: E402
 from ponies.formfav import FF_FEATURE_NAMES, load_store  # noqa: E402
 from ponies.model import ConditionalLogit, _race_codes, race_softmax, win_targets  # noqa: E402
 
@@ -62,7 +62,28 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     if "ff_model_logp" not in df:
         df["ff_model_logp"] = np.nan
     df["has_ff_pred"] = df["ff_model_logp"].notna().astype(float)
+    # [A-51] other ways of removing the bookmaker's margin
+    for name, fn in (("shin_logp", odds.shin_probabilities), ("pow_logp", odds.power_probabilities)):
+        df[name] = np.nan
+        for _, idx in df.groupby("race_id").indices.items():
+            df.loc[df.index[idx], name] = np.log(fn(df["dec"].to_numpy()[idx]))
+    # [A-52] segments and price bands where the favourite-longshot bias may differ
+    df["fav_rank"] = df.groupby("race_id")["dec"].rank(method="first")
+    seg = {"wet": df["condition"].fillna("").str.match(r"(soft|heavy)"),
+           "maiden": df["race_class"].fillna("").str.upper().str.contains("MDN|MAIDEN"),
+           "big_field": df["field_size"] >= 12, "small_field": df["field_size"] <= 7}
+    for k, v in seg.items():
+        df[f"seg_{k}"] = v.astype(float)
+        df[f"mk_x_{k}"] = df["mk_logp"] * df[f"seg_{k}"]
+    bands = {"band_fav": df["fav_rank"] == 1, "band_2nd": df["fav_rank"] == 2, "band_3rd": df["fav_rank"] == 3,
+             "band_10_20": df["dec"].between(10, 20, inclusive="left"), "band_20_plus": df["dec"] >= 20}
+    for k, v in bands.items():
+        df[k] = v.astype(float)
     return df.reset_index(drop=True)
+
+
+SEGMENT_TERMS = ["mk_x_wet", "mk_x_maiden", "mk_x_big_field", "mk_x_small_field"]
+BAND_TERMS = ["band_fav", "band_2nd", "band_3rd", "band_10_20", "band_20_plus"]
 
 
 def decorator_columns(df: pd.DataFrame, top: int = 15) -> list[str]:
@@ -87,7 +108,7 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_days: list, l2: flo
         train, test = df[df["date"] < d], df[df["date"] == d]
         if train["race_id"].nunique() < min_train_races or test.empty:
             continue
-        m = ConditionalLogit(features, l2=l2, unpenalized=("mk_logp",)).fit(train)
+        m = ConditionalLogit(features, l2=l2, unpenalized=("mk_logp", "shin_logp", "pow_logp")).fit(train)
         out[test.index] = m.predict_proba(test)
     return out
 
@@ -145,6 +166,11 @@ def main() -> int:
         "market_calibrated": (["mk_logp"], None),
         "form_only": (form, None),
         "residual_form": (["mk_logp"] + form, None),
+        "shin_calibrated": (["shin_logp"], None),                            # [A-51]
+        "power_calibrated": (["pow_logp"], None),
+        "market_segments": (["mk_logp"] + SEGMENT_TERMS, None),              # [A-52]
+        "market_bands": (["mk_logp"] + BAND_TERMS, None),
+        "shin_segments_bands": (["shin_logp"] + SEGMENT_TERMS + BAND_TERMS, None),
         "ff_pred_only": (["ff_model_logp"], None),                          # [A-47]
         "market_plus_ff_pred": (["mk_logp", "ff_model_logp", "has_ff_pred"], None),
         "market_ff_pred_form_l2_0.3": (["mk_logp", "ff_model_logp", "has_ff_pred"] + form, 0.3),
@@ -166,7 +192,9 @@ def main() -> int:
     won = S["won"].to_numpy()
     report = {"test_races": int(k), "test_from": str(S["date"].min().date()) if k else None,
               "uniform_log_loss": round(float(np.mean(np.log(S.groupby("race_id").size()))), 4),
-              "market_log_loss": round(float(base.mean()), 4)}
+              "market_log_loss": round(float(base.mean()), 4),
+              "uncalibrated_log_loss": {name: round(float(race_losses(race_softmax(S[col].to_numpy(), codes, k), S).mean()), 4)
+                                        for name, col in (("proportional", "mk_logp"), ("shin", "shin_logp"), ("power", "pow_logp"))}}
     sp_ok = S["sp_logp"].notna().to_numpy()
     if sp_ok.all():
         report["sp_log_loss"] = round(float(race_losses(race_softmax(S["sp_logp"].to_numpy(), codes, k), S).mean()), 4)

@@ -65,3 +65,43 @@ def fair_odds_string(prob: float) -> str:
     if to_one < 1:
         return f"{to_one:.2f}-1"
     return f"{to_one:.1f}-1"
+
+
+def shin_probabilities(decimal_odds: np.ndarray) -> np.ndarray:
+    """[A-51] Shin (1993) de-margining: assumes part of the money comes from
+    insiders, so the bookmaker's margin falls more heavily on longshots.
+    p_i = (sqrt(z^2 + 4(1-z) pi_i^2 / S) - z) / (2(1-z)), pi_i = 1/odds,
+    S = sum(pi), with z in [0, 0.5) solved by bisection so sum(p) = 1."""
+    pi = 1.0 / np.asarray(decimal_odds, dtype=float)
+    s = pi.sum()
+    if s <= 1.0:
+        return pi / s  # no margin to remove (or an over-broke book)
+
+    def probs(z):
+        return (np.sqrt(z * z + 4 * (1 - z) * pi * pi / s) - z) / (2 * (1 - z))
+    lo, hi = 0.0, 0.5
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if probs(mid).sum() > 1:
+            lo = mid
+        else:
+            hi = mid
+    p = probs((lo + hi) / 2)
+    return p / p.sum()
+
+
+def power_probabilities(decimal_odds: np.ndarray) -> np.ndarray:
+    """[A-51] Power de-margining: p_i = pi_i^k with k >= 1 chosen so the
+    probabilities sum to 1 (shrinks longshots more than favourites)."""
+    pi = 1.0 / np.asarray(decimal_odds, dtype=float)
+    if pi.sum() <= 1.0:
+        return pi / pi.sum()
+    lo, hi = 1.0, 3.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if (pi ** mid).sum() > 1:
+            lo = mid
+        else:
+            hi = mid
+    p = pi ** ((lo + hi) / 2)
+    return p / p.sum()
