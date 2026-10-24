@@ -40,9 +40,13 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=config.RAW_DIR / "betfair")
     ap.add_argument("--commission", type=float, default=0.08, help="your Betfair rate on net winnings")
     ap.add_argument("--country", default=None)
+    ap.add_argument("--table", type=Path, default=None, help="compact table from betfair_tar_to_table.py")
     a = ap.parse_args()
 
-    df = load_files(a.dir)
+    if a.table:
+        df = pd.read_csv(a.table, parse_dates=["date"], dtype={"program": str, "market_id": str})
+    else:
+        df = load_files(a.dir)
     if df.empty:
         print("no files")
         return 1

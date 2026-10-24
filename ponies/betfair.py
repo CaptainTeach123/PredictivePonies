@@ -32,14 +32,13 @@ def _ts(ms: int) -> pd.Timestamp:
 
 
 def parse_market(lines) -> list[dict]:
-    """One market's stream lines -> runner rows (removed runners dropped).
+    """Stream lines -> runner rows for every market in them (a file can hold
+    one market, or a whole event's markets). Removed runners are dropped.
 
     [A-53] Pre-race price = the last traded price before the market first
     turned in-play (or, if it never did, before the scheduled start);
     ``ltp_t30`` = the last traded price 30 minutes before the start."""
-    definition, market_id = None, None
-    went_in_play = None
-    history: dict[int, list[tuple[int, float]]] = {}
+    markets: dict[str, dict] = {}
     for line in lines:
         line = line.strip()
         if not line:
@@ -47,15 +46,22 @@ def parse_market(lines) -> list[dict]:
         msg = json.loads(line)
         pt = msg.get("pt")
         for mc in msg.get("mc", []):
-            market_id = mc.get("id", market_id)
+            m = markets.setdefault(mc.get("id"), {"definition": None, "in_play": None, "history": {}})
             md = mc.get("marketDefinition")
             if md:
-                definition = md
-                if md.get("inPlay") and went_in_play is None:
-                    went_in_play = pt
+                m["definition"] = md
+                if md.get("inPlay") and m["in_play"] is None:
+                    m["in_play"] = pt
             for rc in mc.get("rc", []):
                 if isinstance(rc.get("ltp"), (int, float)):
-                    history.setdefault(rc["id"], []).append((pt, float(rc["ltp"])))
+                    m["history"].setdefault(rc["id"], []).append((pt, float(rc["ltp"])))
+    rows = []
+    for market_id, m in markets.items():
+        rows += _market_rows(market_id, m["definition"], m["in_play"], m["history"])
+    return rows
+
+
+def _market_rows(market_id, definition, went_in_play, history) -> list[dict]:
     if not definition:
         return []
     start = pd.Timestamp(definition.get("marketTime")).tz_convert("UTC") if definition.get("marketTime") else None
