@@ -45,3 +45,15 @@ def test_upcoming_race_has_no_outcome():
 def test_form_string_helpers():
     assert spell_status("63X") == "firstUp" and spell_status("0X367") is None and spell_status("7X9") == "secondUp"
     assert finishes("0X367") == [10, 3, 6, 7]
+
+
+def test_market_price_and_move():
+    prices = {"runners": [
+        {"number": 4, "prices": [{"marketType": "fixed", "open": 21, "close": 13},
+                                 {"marketType": "fixed", "open": 19, "close": 12},
+                                 {"marketType": "tote", "close": 30}]},
+        {"number": 6, "prices": [{"marketType": "fixed", "open": 6, "close": 8}]}]}
+    rows = {r["horse_name"]: r for r in race_rows(CARD, RESULT, prices)}
+    assert rows["Nickibi"]["morning_line"] == "12.00"            # median fixed close 13 (tote ignored)
+    assert rows["Nickibi"]["price_move"] > 0                      # firmed from 21 to 13
+    assert abs(rows["Satoshi"]["price_move"] - math.log(6 / 8)) < 1e-12   # drifted

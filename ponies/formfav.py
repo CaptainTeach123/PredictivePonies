@@ -166,6 +166,19 @@ def market_odds(prices: dict | None) -> dict:
     return out
 
 
+def market_open(prices: dict | None) -> dict:
+    """[A-43] Opening price per runner: median across bookmakers of the
+    fixed-odds 'open'. With market_odds this gives the price move."""
+    out = {}
+    for r in (prices or {}).get("runners", []):
+        quotes = sorted(float(q["open"]) for q in r.get("prices", [])
+                        if q.get("marketType", "fixed") == "fixed"
+                        and isinstance(q.get("open"), (int, float)) and q["open"] > 1)
+        if quotes:
+            out[r.get("number")] = quotes[len(quotes) // 2]
+    return out
+
+
 def race_rows(card: dict, result: dict | None = None, prices: dict | None = None) -> list[dict]:
     """One row per runner that started (scratchings dropped [A-21]).
 
@@ -175,7 +188,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
     if card.get("abandoned"):
         return []
     placings = {p.get("number"): p for p in (result or {}).get("placings", [])}
-    market = market_odds(prices)
+    market, opening = market_odds(prices), market_open(prices)
     runners = [r for r in card.get("runners", [])
                if not r.get("scratched") and not placings.get(r.get("number"), {}).get("scratched")]
     track = slug(card["track"])
@@ -200,6 +213,9 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
             "jockey_name": r.get("jockey") or None, "trainer_name": r.get("trainer") or None,
             # pre-race bookmaker price [A-42], as odds-to-one like the rest of the repo
             "morning_line": f"{market[r.get('number')] - 1:.2f}" if r.get("number") in market else None,
+            # [A-43] log(open / close): > 0 = price shortened (money came for it)
+            "price_move": (math.log(opening[r.get("number")] / market[r.get("number")])
+                           if r.get("number") in market and r.get("number") in opening else math.nan),
             "final_odds": f"{sp - 1:.2f}" if sp > 1 else None,
             "finish_position": pos,
             "distance_furlongs": furlongs(card.get("distance")),

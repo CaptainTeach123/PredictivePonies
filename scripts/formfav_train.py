@@ -85,12 +85,14 @@ def main() -> int:
 
     model = ConditionalLogit(FF_FEATURE_NAMES).fit(A)
 
+    # note: blend.predict_proba imputes a missing price_move with the race median [A-07]
     def blend_frame(part):
         return pd.DataFrame({"race_id": part["race_id"].to_numpy(), "won": part["won"].to_numpy(),
                              "model_logp": np.log(np.clip(model.predict_proba(part), 1e-12, 1)),
-                             "market_logp": part["mk_logp"].to_numpy()})
+                             "market_logp": part["mk_logp"].to_numpy(),
+                             "price_move": part["price_move"].to_numpy()})  # [A-43]
 
-    blend = ConditionalLogit(["model_logp", "market_logp"])
+    blend = ConditionalLogit(["model_logp", "market_logp", "price_move"])
     blend.fit(blend_frame(B))
     # unscaled weights: score = c1 * model_logp + c2 * market_logp (+ constant)
     c = (blend.weights / blend.stds).tolist()
@@ -121,7 +123,8 @@ def main() -> int:
         "test_races_C": int(k), "test_from": str(C["date"].min().date()),
         "log_loss_C": {k_: round(float(v.mean()), 4) for k_, v in ll.items()},
         "uniform_log_loss_C": round(float(np.mean(np.log(C.groupby("race_id").size()))), 4),
-        "blend_weights": {"model_logp": round(c[0], 3), "market_logp": round(c[1], 3)},
+        "blend_weights": {"model_logp": round(c[0], 3), "market_logp": round(c[1], 3),
+                          "price_move": round(c[2], 3)},
         "blend_vs_pre_race_market": compare("market_pre_race", ll["blend"], ll["market_pre_race"]),
         "model_vs_pre_race_market": compare("market_pre_race", ll["model"], ll["market_pre_race"]),
         "top_pick_win_rate_C": {
@@ -161,7 +164,8 @@ def predict_upcoming(model: ConditionalLogit, c: list, up: pd.DataFrame, value_o
         return []
     codes, k = _race_codes(up["race_id"])
     p_model = model.predict_proba(up)
-    score = c[0] * np.log(np.clip(p_model, 1e-12, 1)) + c[1] * up["mk_logp"].to_numpy()
+    move = np.nan_to_num(up["price_move"].to_numpy(dtype=float))  # unknown move = none
+    score = c[0] * np.log(np.clip(p_model, 1e-12, 1)) + c[1] * up["mk_logp"].to_numpy() + c[2] * move
     p_blend = race_softmax(score, codes, k)
     p_mk = race_softmax(up["mk_logp"].to_numpy(), codes, k)
     dec = up["morning_line"].map(odds.to_decimal).to_numpy(dtype=float)
