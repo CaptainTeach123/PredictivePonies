@@ -17,6 +17,7 @@ gradient descent [A-10]. No external ML library is needed.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,7 +61,9 @@ class ConditionalLogit:
     def _prepare(self, df: pd.DataFrame, fit: bool) -> np.ndarray:
         X = df[self.feature_names].to_numpy(dtype=float)
         if fit:
-            self.impute_values = np.nan_to_num(np.nanmean(X, axis=0))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)  # all-missing column -> 0
+                self.impute_values = np.nan_to_num(np.nanmean(X, axis=0))
         # [A-07] impute with the median of the runner's own race field, so a
         # missing value is "average for this race" whatever the figure scale;
         # fall back to the training mean when the whole field is missing it.

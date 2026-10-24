@@ -52,6 +52,7 @@ the before/after backtest numbers in the *Change log* at the bottom.
 | A-39 | FormFav has no surface field: Polytrack, synthetic or Tapeta in the track name or rating → synthetic, otherwise turf | `formfav.surface_for` | – | Almost all Australian racing is on turf. |
 | A-40 | FormFav form strings read oldest → newest. "X" marks a spell (ends in X = first-up; X then one run = second-up), and "0" = 10th or worse (counted as 10) | `formfav.spell_status`, `formfav.finishes` | – | Matches the published cards: Satoshi "0X367" ran 3rd, 6th, 7th after a spell. |
 | A-41 | Trainer and jockey win rates at the track come from FormFav's notes ("22% trainer win rate here (37 starts)"). They're missing when FormFav doesn't show the note, i.e. when the rate isn't notable | `formfav._decorator_rate` | – | FormFav only shows strong records, so a missing value isn't neutral. The model sees it as missing and imputes [A-07]. |
+| A-42 | FormFav pre-race market price = **median across bookmakers of the fixed-odds closing price** (last quote before the jump), or the current price for races not yet run. It's stored in `morning_line`, so value flags compare against a price you could have bet | `formfav.market_odds`, `formfav.race_rows` | – | Median resists one bookmaker's outlier. Tote prices are excluded because they keep moving until the jump. |
 
 ## Known limitations / ideas for whoever improves this next
 

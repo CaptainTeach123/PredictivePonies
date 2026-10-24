@@ -152,7 +152,21 @@ def runner_features(runner: dict, card: dict) -> dict:
     }
 
 
-def race_rows(card: dict, result: dict | None = None) -> list[dict]:
+def market_odds(prices: dict | None) -> dict:
+    """[A-42] Pre-race market price per runner number: the median across
+    bookmakers of the fixed-odds 'close' (last price before the jump), falling
+    back to the current 'win' price for races not yet run. Decimal odds."""
+    out = {}
+    for r in (prices or {}).get("runners", []):
+        quotes = [q.get("close") or q.get("win") for q in r.get("prices", [])
+                  if q.get("marketType", "fixed") == "fixed"]
+        quotes = sorted(float(x) for x in quotes if isinstance(x, (int, float)) and x > 1)
+        if quotes:
+            out[r.get("number")] = quotes[len(quotes) // 2]
+    return out
+
+
+def race_rows(card: dict, result: dict | None = None, prices: dict | None = None) -> list[dict]:
     """One row per runner that started (scratchings dropped [A-21]).
 
     With ``result``: finish_position, won, and final_odds from the starting
@@ -161,6 +175,7 @@ def race_rows(card: dict, result: dict | None = None) -> list[dict]:
     if card.get("abandoned"):
         return []
     placings = {p.get("number"): p for p in (result or {}).get("placings", [])}
+    market = market_odds(prices)
     runners = [r for r in card.get("runners", [])
                if not r.get("scratched") and not placings.get(r.get("number"), {}).get("scratched")]
     track = slug(card["track"])
@@ -183,7 +198,8 @@ def race_rows(card: dict, result: dict | None = None) -> list[dict]:
             "horse_id": f"FF-{slug(country)}-{slug(r['name'])}", "horse_name": r["name"],
             "program": str(r.get("number")), "post_position": _num(r.get("barrier")),
             "jockey_name": r.get("jockey") or None, "trainer_name": r.get("trainer") or None,
-            "morning_line": None,  # Pro tier has no pre-race prices
+            # pre-race bookmaker price [A-42], as odds-to-one like the rest of the repo
+            "morning_line": f"{market[r.get('number')] - 1:.2f}" if r.get("number") in market else None,
             "final_odds": f"{sp - 1:.2f}" if sp > 1 else None,
             "finish_position": pos,
             "distance_furlongs": furlongs(card.get("distance")),
@@ -205,9 +221,10 @@ def load_store(directory: Path) -> pd.DataFrame:
     for path in sorted(Path(directory).rglob("*.json")):
         meeting = json.loads(path.read_text())
         results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])}
+        prices = meeting.get("prices", {})
         cards = meeting.get("cards", [])
         for card in (cards.values() if isinstance(cards, dict) else cards):
             res = results.get(card["raceNumber"])
             final = res if res and res.get("resultStatus") == "final" else None
-            rows += race_rows(card, final)
+            rows += race_rows(card, final, prices.get(str(card["raceNumber"])))
     return pd.DataFrame(rows)
