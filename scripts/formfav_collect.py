@@ -213,7 +213,7 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
 
 
 def store_summary() -> dict:
-    files = list(STORE.rglob("*.json"))
+    files = list(STORE.glob("????-??-??/*.json"))  # day folders only (not predictions/)
     races = final = 0
     for f in files:
         d = json.loads(f.read_text())

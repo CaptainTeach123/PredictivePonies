@@ -218,7 +218,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
 def load_store(directory: Path) -> pd.DataFrame:
     """All stored meetings -> one DataFrame (completed races + upcoming)."""
     rows = []
-    for path in sorted(Path(directory).rglob("*.json")):
+    for path in sorted(Path(directory).glob("????-??-??/*.json")):  # day folders only
         meeting = json.loads(path.read_text())
         results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])}
         prices = meeting.get("prices", {})
