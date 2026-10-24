@@ -22,7 +22,6 @@ import json
 import os
 import sys
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -97,16 +96,15 @@ def main() -> int:
     a = ap.parse_args()
 
     ssoid = login()
-    mine = post(ssoid, "GetMyData", {}) or []
+    req = urllib.request.Request(API + "GetMyData", headers={"ssoid": ssoid})  # a GET per Betfair's docs
+    with urllib.request.urlopen(req, timeout=60) as r:
+        mine = json.loads(r.read() or b"[]")
     racing = [m for m in mine if m.get("sport") == "Horse Racing"]
     print(json.dumps({"purchased_horse_racing_months": len(racing),
                       "plans": sorted({m.get("plan") for m in racing})}))
     (y1, m1), (y2, m2) = (map(int, s.split("-")) for s in (a.start, a.end))
     flt = month_filter(a, y1, m1, y2, m2)
-    try:  # Betfair's docs name it both ways
-        size = post(ssoid, "GetAdvBasketDataSize", flt)
-    except urllib.error.HTTPError:
-        size = post(ssoid, "GetAdvBasketSize", flt)
+    size = post(ssoid, "GetAdvBasketDataSize", flt)
     print(json.dumps({"basket": size}))
     if a.dry_run:
         return 0
