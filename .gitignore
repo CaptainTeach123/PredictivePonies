@@ -7,4 +7,6 @@ docs/data/ponies.zip
 data/raw/trackmaster/*
 !data/raw/trackmaster/README.md
 data/raw/formfav/*
+data/raw/betfair/*
+!data/raw/betfair/README.md
 !data/raw/formfav/README.md
