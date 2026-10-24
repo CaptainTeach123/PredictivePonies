@@ -89,6 +89,24 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_days: list, l2: flo
     return out
 
 
+def forward_select(df: pd.DataFrame, pool: list[str], days: list, max_features: int) -> list[str]:
+    """Add one input at a time (to the market log prob) while walk-forward log
+    loss on ``days`` improves by more than 0.001 per race."""
+    def loss(feats):
+        p = walk_forward(df, ["mk_logp"] + feats, days, None)
+        ok = ~np.isnan(p)
+        return float(race_losses(p[ok], df[ok]).mean())
+    chosen, best = [], loss([])
+    while len(chosen) < max_features:
+        trials = {f: loss(chosen + [f]) for f in pool if f not in chosen}
+        f, val = min(trials.items(), key=lambda kv: kv[1])
+        if val > best - 0.001:
+            break
+        chosen.append(f)
+        best = val
+    return chosen
+
+
 def bets(p: np.ndarray, price: np.ndarray, won: np.ndarray, thr: float) -> dict:
     sel = p * price - 1 > thr
     n = int(sel.sum())
@@ -103,6 +121,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
     ap.add_argument("--test-share", type=float, default=0.4)
+    ap.add_argument("--max-select", type=int, default=6)
     a = ap.parse_args()
 
     df = prepare(load_store(a.store))
@@ -118,18 +137,20 @@ def main() -> int:
                                    ("market_best", "market_t30", "prev_market_logp", "sp_logp")}}))
 
     form = FF_FEATURE_NAMES
+    pool = MARKET_EXTRA + form + EXTRA + deco + HISTORY
     variants = {
         "market_calibrated": (["mk_logp"], None),
-        "market_plus_moves": (["mk_logp"] + MARKET_EXTRA, None),
         "form_only": (form, None),
         "residual_form": (["mk_logp"] + form, None),
-        "residual_form_extra": (["mk_logp"] + form + EXTRA + deco, None),
-        "residual_all": (["mk_logp"] + MARKET_EXTRA + form + EXTRA + deco + HISTORY, None),
-        "residual_all_l2_0.1": (["mk_logp"] + MARKET_EXTRA + form + EXTRA + deco + HISTORY, 0.1),
-        "residual_all_l2_0.001": (["mk_logp"] + MARKET_EXTRA + form + EXTRA + deco + HISTORY, 0.001),
-        "residual_market_history": (["mk_logp"] + MARKET_EXTRA + HISTORY, None),
     }
-    # the earliest test days may lack enough training races; score all variants on the same races
+    for l2 in (0.3, 1.0, 3.0):
+        variants[f"residual_form_l2_{l2}"] = (["mk_logp"] + form, l2)
+        variants[f"residual_all_l2_{l2}"] = (["mk_logp"] + pool, l2)
+    # greedy forward selection: chosen on the first half of the test days,
+    # judged only on the second half (reported separately below)
+    half = len(test_days) // 2
+    chosen = forward_select(df, pool, test_days[:half], max_features=a.max_select)
+    print(json.dumps({"selected_on_first_half": chosen}))
     probs = {name: walk_forward(df, f, test_days, l2) for name, (f, l2) in variants.items()}
     have = ~np.isnan(probs["market_calibrated"])
     S = df[have]
@@ -164,6 +185,20 @@ def main() -> int:
     print(json.dumps(report))
     for name, r in rows.items():  # one line per variant
         print(json.dumps({"variant": name, **r}))
+    # honest check of the selected set: second half only
+    late = test_days[half:]
+    L = df[df["date"].isin(late)]
+    pm = walk_forward(df, ["mk_logp"], late, None)
+    ps = walk_forward(df, ["mk_logp"] + chosen, late, None)
+    ok = ~np.isnan(pm)
+    L, pm, ps = df[ok], pm[ok], ps[ok]
+    c2, k2 = _race_codes(L["race_id"])
+    raw = race_losses(race_softmax(L["mk_logp"].to_numpy(), c2, k2), L)
+    for name, p in (("market_calibrated", pm), ("selected", ps)):
+        d = raw - race_losses(p, L)
+        print(json.dumps({"second_half": name, "races": int(k2), "gain_vs_market": round(float(d.mean()), 4),
+                          "se": round(float(d.std(ddof=1) / math.sqrt(len(d))), 4),
+                          "bets_best_price_0.1": bets(p, L["best"].to_numpy(), L["won"].to_numpy(), 0.1)}))
     return 0
 
 
