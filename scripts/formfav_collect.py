@@ -43,8 +43,8 @@ SYDNEY = ZoneInfo("Australia/Sydney")
 
 # Candidates for --probe. The first that answers is printed; set the
 # FORMFAV_MCP_URL / FORMFAV_AUTH repository variables to pin it.
-CANDIDATE_URLS = ["https://mcp.formfav.com/mcp", "https://mcp.formfav.com/", "https://api.formfav.com/mcp"]
-AUTH_STYLES = ["bearer", "x-api-key", "query"]
+CANDIDATE_URLS = ["https://api.formfav.com/mcp", "https://mcp.formfav.com/mcp"]  # first: confirmed 2026-10-24
+AUTH_STYLES = ["x-api-key", "bearer", "query"]  # FormFav documents X-API-Key
 
 
 class FormFavError(RuntimeError):
@@ -242,7 +242,7 @@ def main() -> int:
         return probe(key)
 
     client = McpClient(os.environ.get("FORMFAV_MCP_URL") or CANDIDATE_URLS[0], key,
-                       os.environ.get("FORMFAV_AUTH") or "bearer")
+                       os.environ.get("FORMFAV_AUTH") or "x-api-key")
     client.initialize()
     today = datetime.now(SYDNEY).date()
     # oldest first, so the days about to leave the 30-day window are saved first

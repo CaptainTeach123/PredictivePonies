@@ -5,7 +5,7 @@
 # Setup: Settings -> Secrets and variables -> Actions
 #   secret   FORMFAV_API_KEY   your FormFav key
 #   variable FORMFAV_MCP_URL   (optional) endpoint found by a "probe" run
-#   variable FORMFAV_AUTH      (optional) bearer | x-api-key | query
+#   variable FORMFAV_AUTH      (optional) x-api-key (default) | bearer
 name: FormFav collector
 
 on:
