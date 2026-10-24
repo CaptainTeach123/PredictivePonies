@@ -1,0 +1,74 @@
+# Collects FormFav cards, live odds and results (Australian racing) into the
+# Actions cache. Nothing is committed: FormFav data is licensed and this repo
+# is public. Logs show counts and status codes only.
+#
+# Setup: Settings -> Secrets and variables -> Actions
+#   secret   FORMFAV_API_KEY   your FormFav key
+#   variable FORMFAV_MCP_URL   (optional) endpoint found by a "probe" run
+#   variable FORMFAV_AUTH      (optional) bearer | x-api-key | query
+name: FormFav collector
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"   # every 3 hours: fills the 30-day backfill, then keeps up
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "probe = find the working endpoint; collect = fetch data"
+        type: choice
+        options: [collect, probe]
+        default: probe
+      days_back:
+        description: "Past days to fill (max 29)"
+        default: "29"
+      max_calls:
+        description: "API call budget for this run"
+        default: "2500"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formfav-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      FORMFAV_API_KEY: ${{ secrets.FORMFAV_API_KEY }}
+      FORMFAV_MCP_URL: ${{ vars.FORMFAV_MCP_URL }}
+      FORMFAV_AUTH: ${{ vars.FORMFAV_AUTH }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Probe FormFav endpoint
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'probe'
+        run: python scripts/formfav_collect.py --probe
+
+      - name: Restore store
+        if: github.event_name == 'schedule' || inputs.mode == 'collect'
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/formfav
+          key: formfav-store-${{ github.run_id }}
+          restore-keys: formfav-store-
+
+      - name: Collect
+        if: github.event_name == 'schedule' || inputs.mode == 'collect'
+        run: >
+          python scripts/formfav_collect.py
+          --days-back ${{ inputs.days_back || '29' }}
+          --days-ahead 1
+          --max-calls ${{ inputs.max_calls || '2500' }}
+
+      - name: Save store
+        if: always() && (github.event_name == 'schedule' || inputs.mode == 'collect')
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/formfav
+          key: formfav-store-${{ github.run_id }}

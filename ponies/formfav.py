@@ -11,8 +11,10 @@ A result (Pro tier) gives every runner's finishing position and starting price,
 so each race is a complete field for the conditional logit (model.py),
 scored against the starting-price market.
 
-Stored raw JSON (data/raw/formfav/, git-ignored: licensed data) holds, per
-meeting, {"cards": [get_race_card ...], "results": get_race_results(no race)}.
+Stored raw JSON (data/raw/formfav/, git-ignored: licensed data) is written by
+scripts/formfav_collect.py, one file per meeting:
+{"cards": {race_no: get_race_card}, "prices": {race_no: get_prices},
+ "results": get_race_results(whole meeting)}.
 Judgement calls are tagged [A-39]..[A-41].
 """
 
@@ -203,7 +205,8 @@ def load_store(directory: Path) -> pd.DataFrame:
     for path in sorted(Path(directory).rglob("*.json")):
         meeting = json.loads(path.read_text())
         results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])}
-        for card in meeting.get("cards", []):
+        cards = meeting.get("cards", [])
+        for card in (cards.values() if isinstance(cards, dict) else cards):
             res = results.get(card["raceNumber"])
             final = res if res and res.get("resultStatus") == "final" else None
             rows += race_rows(card, final)
