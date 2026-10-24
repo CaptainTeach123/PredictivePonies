@@ -84,7 +84,7 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_days: list, l2: flo
         train, test = df[df["date"] < d], df[df["date"] == d]
         if train["race_id"].nunique() < min_train_races or test.empty:
             continue
-        m = ConditionalLogit(features, l2=l2).fit(train)
+        m = ConditionalLogit(features, l2=l2, unpenalized=("mk_logp",)).fit(train)
         out[test.index] = m.predict_proba(test)
     return out
 
@@ -143,7 +143,7 @@ def main() -> int:
         "form_only": (form, None),
         "residual_form": (["mk_logp"] + form, None),
     }
-    for l2 in (0.3, 1.0, 3.0):
+    for l2 in (0.03, 0.1, 0.3, 1.0):
         variants[f"residual_form_l2_{l2}"] = (["mk_logp"] + form, l2)
         variants[f"residual_all_l2_{l2}"] = (["mk_logp"] + pool, l2)
     # greedy forward selection: chosen on the first half of the test days,

@@ -56,6 +56,7 @@ class ConditionalLogit:
     means: np.ndarray | None = None
     stds: np.ndarray | None = None
     l2: float | None = None  # None -> config.L2_PENALTY [A-09]
+    unpenalized: tuple[str, ...] = ()  # e.g. the market log prob in a residual model
     history: list[float] = field(default_factory=list)
 
     # ----- preprocessing ---------------------------------------------------
@@ -83,12 +84,13 @@ class ConditionalLogit:
         codes, n_races = _race_codes(df["race_id"])
         y = win_targets(df["won"].to_numpy(), codes, n_races)
         Z = self._prepare(df, fit=True)
-        l2 = config.L2_PENALTY if self.l2 is None else self.l2
+        l2 = (config.L2_PENALTY if self.l2 is None else self.l2) * np.array(
+            [0.0 if f in self.unpenalized else 1.0 for f in self.feature_names])
 
         def loss_and_grad(w):
             p = race_softmax(Z @ w, codes, n_races)
             loss = (-np.sum(y * np.log(p + 1e-15)) / n_races
-                    + 0.5 * l2 * w @ w)
+                    + 0.5 * w @ (l2 * w))
             grad = Z.T @ (p - y) / n_races + l2 * w
             return loss, grad
 
