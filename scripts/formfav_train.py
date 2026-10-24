@@ -29,11 +29,12 @@ from ponies.model import ConditionalLogit, _race_codes, race_softmax, win_target
 
 
 def market_logp(df: pd.DataFrame, col: str) -> np.ndarray:
-    """log implied probability (normalised per race); NaN where odds missing."""
+    """log win probability from the price, margin removed per race; NaN if any odds missing."""
     dec = df[col].map(odds.to_decimal).to_numpy(dtype=float)
     out = np.full(len(df), np.nan)
     for _, idx in df.groupby("race_id").indices.items():
-        out[idx] = np.log(odds.implied_probabilities(dec[idx]))
+        # [A-51] Shin de-margining: beat proportional on 527 walk-forward races
+        out[idx] = np.log(odds.shin_probabilities(dec[idx])) if np.isfinite(dec[idx]).all() else np.nan
     return out
 
 
