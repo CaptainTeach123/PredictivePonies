@@ -54,6 +54,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
     ap.add_argument("--out", type=Path, default=None, help="write the fitted model (weights only) here")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="per-feature coverage and stand-alone predictive power (numbers only)")
     ap.add_argument("--predict", type=Path, default=None,
                     help="write predictions for upcoming races (licensed data: keep private)")
     a = ap.parse_args()
@@ -84,6 +86,8 @@ def main() -> int:
     A, B, C = df[pos < order[cut_b]], df[(pos >= order[cut_b]) & (pos < order[cut_c])], df[pos >= order[cut_c]]
 
     model = ConditionalLogit(FF_FEATURE_NAMES).fit(A)
+    if a.diagnose:
+        diagnose(A, C)
 
     # note: blend.predict_proba imputes a missing price_move with the race median [A-07]
     def blend_frame(part):
@@ -151,6 +155,26 @@ def main() -> int:
         print(json.dumps({"upcoming_races_predicted": len(cards), "value_flags_enabled": value_ok,
                           "value_flags": sum(r["value"] for c_ in cards for r in c_["runners"])}))
     return 0
+
+
+def diagnose(A: pd.DataFrame, C: pd.DataFrame) -> None:
+    """For each feature: share of runners with a value, and the test-slice log
+    loss of a one-feature model trained on A (lower than uniform = useful)."""
+    uniform = float(np.mean(np.log(C.groupby("race_id").size())))
+    rows = []
+    for f in FF_FEATURE_NAMES:
+        cov_a, cov_c = float(A[f].notna().mean()), float(C[f].notna().mean())
+        try:
+            m = ConditionalLogit([f]).fit(A)
+            ll = float(race_losses(m.predict_proba(C), C).mean())
+            w = float((m.weights / m.stds)[0])
+        except Exception:  # noqa: BLE001
+            ll, w = math.nan, math.nan
+        rows.append((f, round(cov_a, 3), round(cov_c, 3), round(ll, 4), round(uniform - ll, 4), round(w, 4)))
+    rows.sort(key=lambda r: -(r[4] if not math.isnan(r[4]) else -9))
+    print(json.dumps({"diagnose_uniform_log_loss_C": round(uniform, 4),
+                      "features": [dict(zip(("feature", "coverage_A", "coverage_C", "log_loss_C",
+                                             "gain_vs_uniform", "weight"), r)) for r in rows]}, indent=1))
 
 
 def predict_upcoming(model: ConditionalLogit, c: list, up: pd.DataFrame, value_ok: bool) -> list[dict]:
