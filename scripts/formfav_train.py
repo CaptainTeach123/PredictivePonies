@@ -54,12 +54,15 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
     ap.add_argument("--out", type=Path, default=None, help="write the fitted model (weights only) here")
+    ap.add_argument("--predict", type=Path, default=None,
+                    help="write predictions for upcoming races (licensed data: keep private)")
     a = ap.parse_args()
 
     df = load_store(a.store)
     if df.empty:
         print("store is empty")
         return 1
+    upcoming = df[df["won"].isna() & (df["date"] >= pd.Timestamp.now().normalize() - pd.Timedelta(days=1))].copy()
     df = df[df["won"].notna()]
     winners = df.groupby("race_id")["won"].transform("sum")
     df = df[(winners == 1) & (df.groupby("race_id")["race_id"].transform("size") >= 2)].copy()
@@ -133,10 +136,47 @@ def main() -> int:
         report["vs_starting_price"] = {"sp_log_loss": round(float(ll_sp.mean()), 4),
                                        **compare("starting_price", ll_bl_sp, ll_sp)}
     print(json.dumps(report, indent=1))
+    final = ConditionalLogit(FF_FEATURE_NAMES).fit(df)
     if a.out:
-        final = ConditionalLogit(FF_FEATURE_NAMES).fit(df)
         a.out.write_text(json.dumps({"model": final.to_dict(), "blend": c}, indent=1))
+    if a.predict:
+        g = report["blend_vs_pre_race_market"]
+        value_ok = g["gain_per_race"] > 2 * g["se"]  # [A-35]
+        cards = predict_upcoming(final, c, upcoming, value_ok)
+        a.predict.parent.mkdir(parents=True, exist_ok=True)
+        a.predict.write_text(json.dumps({"value_flags_enabled": value_ok, "evaluation": report, "races": cards}))
+        print(json.dumps({"upcoming_races_predicted": len(cards), "value_flags_enabled": value_ok,
+                          "value_flags": sum(r["value"] for c_ in cards for r in c_["runners"])}))
     return 0
+
+
+def predict_upcoming(model: ConditionalLogit, c: list, up: pd.DataFrame, value_ok: bool) -> list[dict]:
+    """Blended win probabilities for upcoming races with a current price for every runner."""
+    if up.empty:
+        return []
+    up = up.copy()
+    up["mk_logp"] = market_logp(up, "morning_line")
+    up = up[up.groupby("race_id")["mk_logp"].transform(lambda s: s.notna().all())].reset_index(drop=True)
+    if up.empty:
+        return []
+    codes, k = _race_codes(up["race_id"])
+    p_model = model.predict_proba(up)
+    score = c[0] * np.log(np.clip(p_model, 1e-12, 1)) + c[1] * up["mk_logp"].to_numpy()
+    p_blend = race_softmax(score, codes, k)
+    p_mk = race_softmax(up["mk_logp"].to_numpy(), codes, k)
+    dec = up["morning_line"].map(odds.to_decimal).to_numpy(dtype=float)
+    up["p_model"], up["p_blend"], up["p_market"], up["price"] = p_model, p_blend, p_mk, dec
+    out = []
+    for rid, g in up.groupby("race_id", sort=False):
+        g = g.sort_values("p_blend", ascending=False)
+        out.append({"race_id": rid, "date": str(g["date"].iloc[0].date()), "track": g["track"].iloc[0],
+                    "race": int(g["race_number"].iloc[0]), "runners": [{
+                        "number": r.program, "horse": r.horse_name, "price": round(r.price, 2),
+                        "win_blend": round(r.p_blend, 4), "win_model": round(r.p_model, 4),
+                        "win_market": round(r.p_market, 4), "edge": round(r.p_blend * r.price - 1, 4),
+                        "value": bool(value_ok and r.p_blend * r.price - 1 > config.VALUE_EDGE_THRESHOLD),
+                    } for r in g.itertuples()]})
+    return out
 
 
 if __name__ == "__main__":
