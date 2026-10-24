@@ -345,6 +345,29 @@ def load_store(directory: Path) -> pd.DataFrame:
     return add_store_history(pd.DataFrame(rows))
 
 
+def load_dividends(directory: Path) -> dict[str, list[dict]]:
+    """[A-48] race_id -> tote dividends of the final result (winning
+    combinations only), from one operator/jurisdiction per race: the first
+    listed. Dividends are per $1, runner numbers as text like ``program``."""
+    out = {}
+    for path in sorted(Path(directory).glob("????-??-??/*.json")):
+        meeting = json.loads(path.read_text())
+        cards = meeting.get("cards", {})
+        for res in (meeting.get("results") or {}).get("races", []):
+            if res.get("resultStatus") != "final" or not res.get("dividends"):
+                continue
+            card = (cards.get(str(res["raceNumber"])) if isinstance(cards, dict) else None) or res
+            race_id = f"{slug(card.get('track') or res.get('track'))}-{card.get('date') or res.get('date')}-{int(res['raceNumber'])}"
+            first = res["dividends"][0]
+            key = (first.get("operator"), first.get("jurisdiction"))
+            out[race_id] = [{"pool": d.get("pool"), "combination": [str(x) for x in d.get("combination") or []],
+                             "dividend": float(d["dividend"])}
+                            for d in res["dividends"]
+                            if (d.get("operator"), d.get("jurisdiction")) == key
+                            and isinstance(d.get("dividend"), (int, float))]
+    return out
+
+
 STORE_HISTORY = ("prev_margin", "prev_market_logp", "prev_won", "days_since_prev")
 
 
