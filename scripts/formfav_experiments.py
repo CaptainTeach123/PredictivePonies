@@ -59,6 +59,9 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["prev_margin_log"] = np.log1p(df["prev_margin"])
     df["days_since_prev_log"] = np.log1p(df["days_since_prev"])
     df["has_prev"] = df["prev_market_logp"].notna().astype(float)
+    if "ff_model_logp" not in df:
+        df["ff_model_logp"] = np.nan
+    df["has_ff_pred"] = df["ff_model_logp"].notna().astype(float)
     return df.reset_index(drop=True)
 
 
@@ -134,7 +137,7 @@ def main() -> int:
     print(json.dumps({"races": int(df["race_id"].nunique()), "runners": len(df), "days": len(days),
                       "test_days": len(test_days),
                       "coverage": {c: round(float(df[c].notna().mean()), 3) for c in
-                                   ("market_best", "market_t30", "prev_market_logp", "sp_logp")}}))
+                                   ("market_best", "market_t30", "prev_market_logp", "sp_logp", "ff_model_logp")}}))
 
     form = FF_FEATURE_NAMES
     pool = MARKET_EXTRA + form + EXTRA + deco + HISTORY
@@ -142,8 +145,11 @@ def main() -> int:
         "market_calibrated": (["mk_logp"], None),
         "form_only": (form, None),
         "residual_form": (["mk_logp"] + form, None),
+        "ff_pred_only": (["ff_model_logp"], None),                          # [A-47]
+        "market_plus_ff_pred": (["mk_logp", "ff_model_logp", "has_ff_pred"], None),
+        "market_ff_pred_form_l2_0.3": (["mk_logp", "ff_model_logp", "has_ff_pred"] + form, 0.3),
     }
-    for l2 in (0.03, 0.1, 0.3, 1.0):
+    for l2 in (0.1, 1.0):
         variants[f"residual_form_l2_{l2}"] = (["mk_logp"] + form, l2)
         variants[f"residual_all_l2_{l2}"] = (["mk_logp"] + pool, l2)
     # greedy forward selection: chosen on the first half of the test days,
@@ -181,6 +187,15 @@ def main() -> int:
             "bets_best_price": {str(t): bets(p, S["best"].to_numpy(), won, t) for t in (0.0, 0.1, 0.25)},
             "bets_median_price": bets(p, S["dec"].to_numpy(), won, 0.1),
         }
+    pred_races = S.groupby("race_id")["has_ff_pred"].transform("max").to_numpy() == 1
+    if pred_races.any():
+        P = S[pred_races]
+        cp, kp = _race_codes(P["race_id"])
+        bp = race_losses(race_softmax(P["mk_logp"].to_numpy(), cp, kp), P)
+        report["races_with_ff_predictions"] = {"races": int(kp), **{
+            name: {"gain_vs_market": round(float((bp - race_losses(probs[name][have][pred_races], P)).mean()), 4),
+                   "se": round(float((bp - race_losses(probs[name][have][pred_races], P)).std(ddof=1) / math.sqrt(kp)), 4)}
+            for name in ("ff_pred_only", "market_plus_ff_pred", "market_ff_pred_form_l2_0.3")}}
     report["market_top_pick_win"] = round(float(won[pd.Series(p_mk).groupby(codes).transform("max").to_numpy() == p_mk].sum() / k), 4)
     print(json.dumps(report))
     for name, r in rows.items():  # one line per variant

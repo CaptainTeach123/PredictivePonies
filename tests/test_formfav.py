@@ -86,3 +86,11 @@ def test_store_history_uses_earlier_runs_only():
     assert h["days_since_prev"].iloc[2] == 12 and h["prev_won"].iloc[1] == 1
     assert abs(h["prev_market_logp"].iloc[1]) < 1e-12                  # evens in a 2-horse race = average chance
     assert math.isnan(out[out["horse_id"] == "K"]["prev_margin"].iloc[0])
+
+
+def test_formfav_predictions_only_if_made_before_start():
+    from ponies.formfav import formfav_predictions
+    pred = {"predictedAt": "2026-10-21T21:33:39Z", "predictions": [{"number": 7, "winProb": 0.2}]}
+    assert abs(formfav_predictions(pred, "2026-10-22T05:00:00Z")[7] - math.log(0.2)) < 1e-12
+    assert formfav_predictions(pred, "2026-10-21T20:00:00Z") == {}        # made after the start
+    assert formfav_predictions({"unavailable": True}, "2026-10-22T05:00:00Z") == {}

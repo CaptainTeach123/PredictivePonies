@@ -165,7 +165,7 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
             workers: int = 4) -> dict:
     """Fill the store for ``days``. Re-runs only fetch what's missing or stale:
     results until 'final'; cards/prices of upcoming races are refreshed."""
-    stats = {"meetings": 0, "cards": 0, "prices": 0, "results_final": 0, "errors": 0}
+    stats = {"meetings": 0, "cards": 0, "prices": 0, "predictions": 0, "results_final": 0, "errors": 0}
     now = datetime.now(timezone.utc)
     today = datetime.now(SYDNEY).date()
     for d in days:
@@ -183,6 +183,7 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
             path = STORE / d.isoformat() / f"{m['slug']}.json"
             data = _load(path)
             data["meeting"] = {k: m.get(k) for k in ("track", "slug", "country")}
+            data.setdefault("predictions", {})
             stats["meetings"] += 1
             past = d < today
             # past races: fetch once; upcoming races: refresh each run. Prices
@@ -199,14 +200,20 @@ def collect(client: McpClient, days: list[date], countries: set[str], max_calls:
 
             jobs = [(kind, tool, str(race["raceNumber"]))
                     for race in m.get("races", []) if not race.get("abandoned")
-                    for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices"))
+                    for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices"),
+                                       ("predictions", "get_predictions"))
                     if not (past and have(kind, str(race["raceNumber"])))]
             jobs = jobs[:max(0, max_calls - client.calls)]
 
             def fetch(job, slug=m["slug"], day=d.isoformat()):
                 kind, tool, n = job
                 time.sleep(pause)
-                return job, client.tool(tool, date=day, track=slug, race=int(n))
+                try:
+                    return job, client.tool(tool, date=day, track=slug, race=int(n))
+                except FormFavError:
+                    if kind != "predictions":
+                        raise
+                    return job, {"unavailable": True}  # FormFav predicts only some races
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for fut in [pool.submit(fetch, j) for j in jobs]:

@@ -187,6 +187,19 @@ def extra_features(runner: dict, card: dict) -> dict:
     }
 
 
+def formfav_predictions(pred: dict | None, start: str | None) -> dict:
+    """[A-47] FormFav's own win probabilities -> runner number -> log prob.
+    Used only when stamped ``predictedAt`` before the scheduled start (so a
+    prediction made, or remade, after the race can't leak the result)."""
+    if not pred or pred.get("unavailable") or not pred.get("predictions"):
+        return {}
+    made, begins = _when(pred.get("predictedAt")), _when(start)
+    if made is None or begins is None or made >= begins:
+        return {}
+    return {x.get("number"): math.log(x["winProb"]) for x in pred["predictions"]
+            if isinstance(x.get("winProb"), (int, float)) and x["winProb"] > 0}
+
+
 def _when(ts: str | None) -> pd.Timestamp | None:
     try:
         return pd.Timestamp(ts).tz_convert("UTC") if ts else None
@@ -251,7 +264,8 @@ def market_open(prices: dict | None) -> dict:
     return out
 
 
-def race_rows(card: dict, result: dict | None = None, prices: dict | None = None) -> list[dict]:
+def race_rows(card: dict, result: dict | None = None, prices: dict | None = None,
+              predictions: dict | None = None) -> list[dict]:
     """One row per runner that started (scratchings dropped [A-21]).
 
     With ``result``: finish_position, won, and final_odds from the starting
@@ -265,6 +279,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
     market, opening, best = market_odds(prices), market_open(prices), market_best(prices)
     early = market_odds(prices, minutes_before=30)
     books = {n: len(q) for n, q in _quotes(prices).items()}
+    ff_pred = formfav_predictions(predictions, card.get("startTime") or (prices or {}).get("startTime"))
     runners = [r for r in card.get("runners", [])
                if not r.get("scratched") and not placings.get(r.get("number"), {}).get("scratched")]
     track = slug(card["track"])
@@ -298,6 +313,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
             "n_books": books.get(r.get("number"), 0),
             "start_time": card.get("startTime") or (prices or {}).get("startTime"),
             "margin": _margin(p.get("margin")) if result else math.nan,
+            "ff_model_logp": ff_pred.get(r.get("number"), math.nan),   # [A-47]
             "finish_position": pos,
             "distance_furlongs": furlongs(card.get("distance")),
             "surface": surface_for(card["track"], card.get("condition")),
@@ -324,7 +340,8 @@ def load_store(directory: Path) -> pd.DataFrame:
         for card in (cards.values() if isinstance(cards, dict) else cards):
             res = results.get(card["raceNumber"])
             final = res if res and res.get("resultStatus") == "final" else None
-            rows += race_rows(card, final, prices.get(str(card["raceNumber"])))
+            rows += race_rows(card, final, prices.get(str(card["raceNumber"])),
+                              (meeting.get("predictions") or {}).get(str(card["raceNumber"])))
     return add_store_history(pd.DataFrame(rows))
 
 
