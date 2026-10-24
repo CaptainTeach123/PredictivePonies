@@ -74,7 +74,8 @@ jobs:
           python scripts/formfav_train.py --diagnose --predict data/raw/formfav/predictions/latest.json
 
       - name: Compare model variants (summary numbers only)
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'experiment'
+        if: github.event_name == 'schedule' || inputs.mode == 'experiment' || inputs.mode == 'collect'
+        continue-on-error: true
         run: |
           pip install -q -r requirements.txt
           python scripts/formfav_experiments.py
