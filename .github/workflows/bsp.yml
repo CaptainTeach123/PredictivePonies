@@ -1,0 +1,53 @@
+# Betfair publishes daily Starting Price (BSP) files for everyone at
+# https://promo.betfair.com/betfairsp/prices (no account). This fetches the
+# Australian WIN files for a date range into the FormFav cache so the two can
+# be joined race by race (bookmaker prices vs the exchange's closing price).
+# Logs show status codes and counts only.
+name: Betfair SP files
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "First day (YYYY-MM-DD)"
+        default: "2026-09-25"
+      to:
+        description: "Last day (YYYY-MM-DD)"
+        default: "2026-10-25"
+      probe_only:
+        description: "Only report whether the files are reachable"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formfav-collector   # shares the FormFav cache; never run two writers at once
+  cancel-in-progress: false
+
+jobs:
+  bsp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore FormFav store
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/formfav
+          key: formfav-store-${{ github.run_id }}
+          restore-keys: formfav-store-
+      - name: Fetch
+        run: >
+          python scripts/bsp_fetch.py --from ${{ inputs.from }} --to ${{ inputs.to }}
+          ${{ inputs.probe_only && '--probe' || '' }}
+      - name: Save FormFav store
+        if: ${{ !inputs.probe_only }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/formfav
+          key: formfav-store-${{ github.run_id }}

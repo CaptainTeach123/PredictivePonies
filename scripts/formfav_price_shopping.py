@@ -1,0 +1,178 @@
+"""Price shopping and closing-line value on FormFav bookmaker prices.
+
+    python scripts/formfav_price_shopping.py [--store data/raw/formfav]
+
+Nothing is fitted, so every completed race with results and prices counts.
+For each runner the bookmakers' individual fixed prices are replayed from
+their movement histories [A-42] at the jump and at 30 / 60 / 120 minutes
+before the scheduled start. "Fair" win probability = Shin de-margining of the
+median price at the jump [A-51], or the average of each bookmaker's own
+de-margined book [A-55].
+
+Tests (1-unit bets, settled at the price taken, no commission):
+  1. best price at the jump when best x fair > 1 + k         (price shopping)
+  2. best price T minutes before the jump when it beats the fair price
+     implied by the market AT the jump                       (closing-line value)
+  3. pure dispersion: best / median >= r
+  4. arbitrage: races where sum(1 / best price) < 1
+  5. per bookmaker: taking its price whenever it is the best price
+Every cell reports ROI, SE and the two halves of the period. Prints summary
+numbers only (safe for public CI logs).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from ponies import config, odds  # noqa: E402
+from ponies.formfav import _quote_before, _when, slug  # noqa: E402
+
+EARLY = (30, 60, 120)
+
+
+def book_quotes(prices: dict | None, start, minutes_before: float = 0.0) -> dict:
+    """runner number -> {bookmaker: price} at (start - minutes_before)."""
+    cutoff = start - pd.Timedelta(minutes=minutes_before) if start is not None else None
+    out = {}
+    for r in (prices or {}).get("runners", []):
+        qs = {}
+        for q in r.get("prices", []):
+            if q.get("marketType", "fixed") != "fixed":
+                continue
+            p = _quote_before(q, cutoff)
+            if p is not None:
+                qs[q.get("bookmaker") or "?"] = p
+        if qs:
+            out[r.get("number")] = qs
+    return out
+
+
+def shin(prices: list[float]) -> np.ndarray:
+    return odds.shin_probabilities(np.asarray(prices, dtype=float))
+
+
+def race_rows(path: Path, meeting: dict) -> list[dict]:
+    results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])
+               if r.get("resultStatus") == "final"}
+    cards = meeting.get("cards", {})
+    rows = []
+    for n, card in (cards.items() if isinstance(cards, dict) else ((str(c["raceNumber"]), c) for c in cards)):
+        res = results.get(card["raceNumber"])
+        prices = (meeting.get("prices") or {}).get(str(card["raceNumber"]))
+        if not res or not prices or card.get("abandoned"):
+            continue
+        start = _when(card.get("startTime") or prices.get("startTime"))
+        if start is None:
+            continue
+        placings = {p.get("number"): p for p in res.get("placings", [])}
+        runners = [r for r in card.get("runners", []) if not r.get("scratched")
+                   and not placings.get(r.get("number"), {}).get("scratched")
+                   and placings.get(r.get("number"), {}).get("position") is not None]
+        if len(runners) < 2 or sum(placings[r["number"]]["position"] == 1 for r in runners) != 1:
+            continue
+        jump = book_quotes(prices, start)
+        if any(r["number"] not in jump for r in runners):
+            continue  # need a price for every runner to de-margin the field
+        early = {m: book_quotes(prices, start, m) for m in EARLY}
+        median = [float(np.median(list(jump[r["number"]].values()))) for r in runners]
+        best = [max(jump[r["number"]].values()) for r in runners]
+        fair_median = shin(median)
+        # [A-55] each bookmaker with a full book, de-margined on its own, then averaged
+        books = set.intersection(*(set(jump[r["number"]]) for r in runners))
+        per_book = [shin([jump[r["number"]][b] for r in runners]) for b in books]
+        fair_books = np.mean(per_book, axis=0) if per_book else fair_median
+        race_id = f"{slug(card['track'])}-{card['date']}-{int(card['raceNumber'])}"
+        for i, r in enumerate(runners):
+            n_ = r["number"]
+            best_book = max(jump[n_], key=jump[n_].get)
+            row = {"race_id": race_id, "date": pd.Timestamp(card["date"]), "field": len(runners),
+                   "won": float(placings[n_]["position"] == 1),
+                   "median": median[i], "best": best[i], "best_book": best_book, "n_books": len(jump[n_]),
+                   "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
+                   "sum_inv_best": sum(1 / b for b in best)}
+            for m in EARLY:
+                q = early[m].get(n_)
+                row[f"best_{m}"] = max(q.values()) if q else math.nan
+                row[f"median_{m}"] = float(np.median(list(q.values()))) if q else math.nan
+            rows.append(row)
+    return rows
+
+
+def summary(ret: np.ndarray, won: np.ndarray | None = None) -> dict:
+    ret = ret[~np.isnan(ret)]
+    if len(ret) < 2:
+        return {"bets": int(len(ret))}
+    out = {"bets": int(len(ret)), "roi": round(float(ret.mean()), 4),
+           "roi_se": round(float(ret.std(ddof=1) / math.sqrt(len(ret))), 4)}
+    return out
+
+
+def cell(df: pd.DataFrame, mask, price_col: str, mid) -> dict:
+    g = df[mask]
+    ret = np.where(g["won"] == 1, g[price_col] - 1, -1.0)
+    halves = [np.where(h["won"] == 1, h[price_col] - 1, -1.0) for h in (g[g["date"] < mid], g[g["date"] >= mid])]
+    out = summary(ret)
+    out["strike"] = round(float(g["won"].mean()), 4) if len(g) else None
+    out["halves_roi"] = [round(float(h.mean()), 4) if len(h) else None for h in halves]
+    out["both_halves_over_2se"] = bool(all(len(h) > 1 and h.mean() > 2 * h.std(ddof=1) / math.sqrt(len(h)) for h in halves))
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
+    a = ap.parse_args()
+    rows = []
+    for path in sorted(a.store.glob("????-??-??/*.json")):
+        rows += race_rows(path, json.loads(path.read_text()))
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("no races with results and prices")
+        return 1
+    days = sorted(df["date"].unique())
+    mid = days[len(days) // 2]
+    races = df.drop_duplicates("race_id")
+    print(json.dumps({"races": int(len(races)), "runners": int(len(df)), "days": len(days),
+                      "books_per_runner_median": float(df["n_books"].median()),
+                      "book_pct": {"median_price": round(float((1 / df["median"]).groupby(df["race_id"]).sum().median()), 4),
+                                   "best_price": round(float(races["sum_inv_best"].median()), 4)},
+                      "arb_races_sum_inv_best_below_1": int((races["sum_inv_best"] < 1).sum()),
+                      "best_over_median_median_ratio": round(float((df["best"] / df["median"]).median()), 4),
+                      "early_price_coverage": {str(m): round(float(df[f"best_{m}"].notna().mean()), 3) for m in EARLY}}))
+    # 1. price shopping at the jump
+    for fair in ("fair_median", "fair_books"):
+        for k in (0.0, 0.05, 0.1, 0.2):
+            m = df["best"] * df[fair] > 1 + k
+            print(json.dumps({"test": "best_at_jump", "fair": fair, "k": k, **cell(df, m, "best", mid)}))
+    # 2. closing-line value: early best price vs fair at the jump
+    for mins in EARLY:
+        col = f"best_{mins}"
+        have = df[col].notna()
+        for k in (0.0, 0.05, 0.1, 0.2):
+            m = have & (df[col] * df["fair_median"] > 1 + k)
+            print(json.dumps({"test": "early_best_vs_fair_at_jump", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
+        print(json.dumps({"test": "early_best_all_runners", "minutes_before": mins, **cell(df, have, col, mid)}))
+    # 3. pure dispersion
+    for r in (1.0, 1.1, 1.2, 1.3, 1.5):
+        print(json.dumps({"test": "best_over_median", "ratio_at_least": r, **cell(df, df["best"] / df["median"] >= r, "best", mid)}))
+    # 4. every runner at best vs median (what shopping alone recovers)
+    print(json.dumps({"test": "all_runners", "price": "median", **cell(df, df["won"].notna(), "median", mid)}))
+    print(json.dumps({"test": "all_runners", "price": "best", **cell(df, df["won"].notna(), "best", mid)}))
+    # 5. per bookmaker when it is the best price
+    for b, g in df.groupby("best_book"):
+        if len(g) >= 200:
+            print(json.dumps({"test": "bookmaker_when_best", "bookmaker": b, **cell(df, df["best_book"] == b, "best", mid)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
