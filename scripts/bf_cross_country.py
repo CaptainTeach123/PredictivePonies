@@ -29,7 +29,18 @@ one country at a time:
     priced above 50 are excluded from the rule because a last trade at 200 or
     1000 is not a bettable price);
   * a descriptive FLB index: ROI before commission of runners under 4.5 minus
-    runners at 15+, with SE.
+    runners at 15+, with SE;
+  * value-rule diagnostics: with beta near 1 the "edge" p_model*ltp_pre-1 is
+    almost 1/book-1, so the value rules mostly select markets whose LTP book is
+    far from 100%, i.e. stale last trades. The selected bets are split by the
+    market's LTP book (within 3% of 100% or not) and re-settled at BSP, with the
+    median BSP/ltp_pre ratio; the 50+ band gets the lay return per unit of
+    liability at ltp_pre and at BSP;
+  * "thin" family: the markets the strict filter drops (one or more runners
+    never traded before the off; the traded runners only, so the book and the
+    proportional probability are understated/overstated there). Favourite ranks
+    1-3 and the price bands, backed at ltp_pre and BSP, where the country has
+    at least 200 such markets. Disjoint from the strict cells.
 
 Multiple testing: Benjamini-Hochberg at FDR 5% across ALL back cells of all
 countries (one-sided p from z = roi_c5 / se); a survivor must also be > 2 SE
@@ -72,6 +83,7 @@ LAY_MARGIN = 0.10
 VALUE_MAX_PRICE = 50.0  # value rules ignore runners above this: a last trade at 200-1000 is not a bettable price
 FDR = 0.05
 SHORT_MAX, LONG_MIN = 4.5, 15.0  # FLB index bands
+THIN_MIN_MARKETS = 200  # report the thin family only where there are at least this many such markets
 
 # Betfair price ladder: (lower bound inclusive, upper bound exclusive, increment)
 TICKS = [(1.01, 2.0, 0.01), (2.0, 3.0, 0.02), (3.0, 4.0, 0.05), (4.0, 6.0, 0.1), (6.0, 10.0, 0.2),
@@ -245,21 +257,16 @@ def load_country(code: str, end: str | None) -> tuple[pd.DataFrame, dict]:
         "dead_heat_markets": int((wins.groupby(mk).first() > 1).sum()),
     }
 
+    # thin set: one winner, at least one runner never traded; traded runners only
+    thin = df[(wins == 1) & ~all_traded & traded].copy()
+    thin["harness"] = harness[thin.index].to_numpy()
+    thin = add_probs(thin)
     # analysis set: one winner and every runner traded before the off
-    df = df[(wins == 1) & all_traded].copy()
-    df = df.sort_values(["start", "market_id", "ltp_pre", "selection_id"]).reset_index(drop=True)
-    df["fav_rank"] = df.groupby("market_id", sort=False).cumcount() + 1
-    df["won_b"] = df["won"].to_numpy() == 1
-    codes, uniques = pd.factorize(df["market_id"], sort=False)
-    n_races = len(uniques)
-    df["race"] = codes
+    df = df.assign(harness=harness)[(wins == 1) & all_traded].copy()
+    df = add_probs(df)
+    codes = df["race"].to_numpy()
+    n_races = int(codes.max()) + 1
     lp = df["ltp_pre"].to_numpy(dtype=float)
-    book_row = np.bincount(codes, weights=1.0 / lp, minlength=n_races)[codes]
-    df["book"] = book_row
-    df["p_prop"] = (1.0 / lp) / book_row
-    df["p_shin"] = shin_vectorised(lp, codes, n_races)
-    df["has_t30"] = df["ltp_t30"].notna() & (df["ltp_t30"] > 1)
-    df["month"] = df["date"].dt.to_period("M")
     # Shin cross-check against the scalar helper on a few markets
     diffs = []
     for rid in range(min(50, n_races)):
@@ -270,8 +277,32 @@ def load_country(code: str, end: str | None) -> tuple[pd.DataFrame, dict]:
             "dropped": "dead heats and markets with any runner never traded before the off",
             "bsp_coverage_used": r4(((df["bsp"] > 1) & df["bsp"].notna()).mean()),
             "t30_runner_coverage_used": r4(df["has_t30"].mean()),
-            "shin_check_max_abs_diff": r4(max(diffs)) if diffs else None}
-    return df, info
+            "shin_check_max_abs_diff": r4(max(diffs)) if diffs else None,
+            "thin_markets": int(thin["market_id"].nunique()), "thin_runners_traded": int(len(thin)),
+            "thin_median_untraded_per_market": r4((~traded).groupby(mk).sum()[lambda s: s > 0].median()) if (~traded).any() else None}
+    return df, thin, info
+
+
+def add_probs(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort by start, rank runners by ltp_pre within the market and add the race
+    code, book, proportional and Shin probabilities, t30 flag and month."""
+    df = df.sort_values(["start", "market_id", "ltp_pre", "selection_id"]).reset_index(drop=True)
+    df["fav_rank"] = df.groupby("market_id", sort=False).cumcount() + 1
+    df["won_b"] = df["won"].to_numpy() == 1
+    codes, uniques = pd.factorize(df["market_id"], sort=False)
+    n_races = len(uniques)
+    df["race"] = codes
+    lp = df["ltp_pre"].to_numpy(dtype=float)
+    if n_races:
+        book_row = np.bincount(codes, weights=1.0 / lp, minlength=n_races)[codes]
+        df["book"] = book_row
+        df["p_prop"] = (1.0 / lp) / book_row
+        df["p_shin"] = shin_vectorised(lp, codes, n_races)
+    else:
+        df["book"] = df["p_prop"] = df["p_shin"] = np.nan
+    df["has_t30"] = df["ltp_t30"].notna() & (df["ltp_t30"] > 1)
+    df["month"] = df["date"].dt.to_period("M")
+    return df
 
 
 def book_stats(df: pd.DataFrame) -> dict:
@@ -300,6 +331,10 @@ def book_stats(df: pd.DataFrame) -> dict:
                          "q90": r4(b.quantile(0.9))}
         else:
             res[name] = {"markets": 0}
+    if df["harness"].any():
+        hb = df.drop_duplicates("market_id").groupby("harness")["book"].agg(["size", "median"])
+        res["book_by_code"] = {("harness" if k else "gallops"): {"markets": int(v["size"]), "book_median": r4(v["median"])}
+                               for k, v in hb.iterrows()}
     # BSP relative to ltp_pre: does the SP drift out (ratio > 1) or in?
     both = df[df["bsp"].notna() & (df["bsp"] > 1)]
     res["bsp_over_ltp_pre_median"] = r4((both["bsp"] / both["ltp_pre"]).median()) if len(both) else None
@@ -404,7 +439,7 @@ def z_of(cell: dict, key: str = "roi_c5", se_key: str = "se") -> float:
 
 
 def half_z(cell: dict, h: int, key: str = "halves_roi_c5", se_key: str = "halves_se_c5") -> float:
-    if key not in cell:
+    if not cell.get(key) or not cell.get(se_key):
         return float("nan")
     r, s = cell[key][h], cell[se_key][h]
     if r is None or not s:
@@ -423,7 +458,7 @@ def compact(c: dict) -> list:
 
 def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays: list, ll_tests: list) -> dict:
     t0 = time.time()
-    df, info = load_country(code, end)
+    df, thin, info = load_country(code, end)
     if df.empty:
         out({"country": code, "error": "no usable markets"})
         return {}
@@ -506,7 +541,8 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
     gs, gs_se = mean_se(gain_shin[ok_r])
     gm_h = [mean_se(gain_model[ok_r & m]) for m in (race_first, ~race_first)]
     gs_h = [mean_se(gain_shin[ok_r & m]) for m in (race_first, ~race_first)]
-    flb = {"beta_full_sample": [round(beta_full, 4), round(se_full, 4)], "beta_halves": beta_h,
+    flb = {"beta_full_sample": [round(beta_full, 4), round(se_full, 4)],
+           "beta_z_vs_1": r4((beta_full - 1.0) / se_full), "beta_halves": beta_h,
            "beta_walk_forward_first_last": [fits[0]["beta"] if fits else None, fits[-1]["beta"] if fits else None],
            "beta_walk_forward_median": r4(np.median([f["beta"] for f in fits])) if fits else None,
            "scored_races": int(ok_r.sum()), "burn_in_months": burn_in,
@@ -544,6 +580,84 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
                        "lay_bsp_c5": [b.get("lay_roi_c5"), b.get("lay_se"), *(b.get("lay_halves_roi_c5") or [])]})
     out({"section": "value_rule", "country": code, "rows": value_rows})
 
+    # diagnostics: with beta near 1 the "edge" p_model*ltp_pre-1 is almost 1/book-1, so the value
+    # rules mostly select markets whose LTP book is far from 100% (stale last trades). Split the
+    # selected bets by the market's LTP book and compare the same bets settled at BSP.
+    book_arr = df["book"].to_numpy(dtype=float)
+    bsp_arr = df["bsp"].to_numpy(dtype=float)
+    diag = {}
+    for name, idx in ((f"back_edge>={VALUE_MARGINS[0]:g}", np.flatnonzero(scored & (edge >= VALUE_MARGINS[0]))),
+                      (f"back_edge>={VALUE_MARGINS[1]:g}", np.flatnonzero(scored & (edge >= VALUE_MARGINS[1]))),
+                      (f"lay_edge<=-{LAY_MARGIN:g}", np.flatnonzero(scored & (edge <= -LAY_MARGIN)))):
+        if len(idx) == 0:
+            diag[name] = {"bets": 0}
+            continue
+        is_lay = name.startswith("lay")
+        b = book_arr[idx]
+        near = np.abs(b - 1.0) <= 0.03
+        okb = np.isfinite(bsp_arr[idx]) & (bsp_arr[idx] > 1)
+        r_ltp = (rets.lay5["ltp_pre"] if is_lay else rets.back["ltp_pre"][0.05])[idx]
+        r_bsp = (rets.lay5["bsp"] if is_lay else rets.back["bsp"][0.05])[idx]
+        m_in, s_in = mean_se(r_ltp[near])
+        m_out, s_out = mean_se(r_ltp[~near])
+        m_b, s_b = mean_se(r_bsp[okb])
+        m_bn, s_bn = mean_se(r_bsp[okb & near])
+        diag[name] = {"bets": int(len(idx)), "book_median": r4(np.median(b)),
+                      "share_book_under_0.95": r4((b < 0.95).mean()), "share_book_over_1.05": r4((b > 1.05).mean()),
+                      "share_book_within_3pct": r4(near.mean()),
+                      "ltp_pre_c5_book_within_3pct": [int(near.sum()), r4(m_in), r4(s_in)],
+                      "ltp_pre_c5_book_outside_3pct": [int((~near).sum()), r4(m_out), r4(s_out)],
+                      "bsp_c5_same_bets": [int(okb.sum()), r4(m_b), r4(s_b)],
+                      "bsp_c5_book_within_3pct": [int((okb & near).sum()), r4(m_bn), r4(s_bn)],
+                      "median_bsp_over_ltp_pre": r4(np.median(bsp_arr[idx][okb] / lp[idx][okb])) if okb.any() else None}
+    # the 50+ band: how far BSP sits from the last trade, and the lay return per unit of liability
+    i50 = np.flatnonzero(lp >= 50.0)
+    okb = np.isfinite(bsp_arr[i50]) & (bsp_arr[i50] > 1)
+    d50 = {"bets": int(len(i50)), "median_ltp_pre": r4(np.median(lp[i50])),
+           "median_bsp": r4(np.median(bsp_arr[i50][okb])) if okb.any() else None,
+           "median_bsp_over_ltp_pre": r4(np.median(bsp_arr[i50][okb] / lp[i50][okb])) if okb.any() else None,
+           "share_bsp_under_50": r4((bsp_arr[i50][okb] < 50).mean()) if okb.any() else None}
+    for src, mask in (("ltp_pre", np.ones(len(i50), dtype=bool)), ("bsp", okb)):
+        ii = i50[mask]
+        if len(ii):
+            pr = rets.price[src][ii]
+            l5 = rets.lay5[src][ii]
+            d50[f"lay_{src}_c5_roi_on_stake"] = r4(l5.mean())
+            d50[f"lay_{src}_c5_roi_on_liability"] = r4(l5.sum() / (pr - 1.0).sum())
+            d50[f"mean_liability_{src}"] = r4((pr - 1.0).mean())
+    diag["band_50plus"] = d50
+    out({"section": "value_rule_diagnostics", "country": code, **diag})
+
+    # thin markets: the ones the strict filter dropped (traded runners only)
+    thin_rows = []
+    if thin["market_id"].nunique() >= THIN_MIN_MARKETS:
+        trets = Returns(thin, mid)
+        tfav = thin["fav_rank"].to_numpy()
+        for k in range(1, 4):
+            idx = np.flatnonzero(tfav == k)
+            a = trets.cell(idx, "ltp_pre")
+            b = trets.cell(idx, "bsp")
+            cells.append((code, "thin_rank", f"fav{k}", "ltp_pre", a))
+            cells.append((code, "thin_rank", f"fav{k}", "bsp", b))
+            thin_rows.append({"cell": f"fav{k}", "n": a["bets"], "median_price": a.get("median_price"),
+                              "strike": a.get("strike"), "implied_raw": a.get("implied_raw"),
+                              "back_ltp_pre": compact(a), "tick_down_c5": a.get("roi_c5_tick_down"), "back_bsp": compact(b)})
+        tband = pd.cut(thin["ltp_pre"], PRICE_BANDS, right=False, labels=BAND_LABELS).astype(str).to_numpy()
+        for lab in BAND_LABELS:
+            idx = np.flatnonzero(tband == lab)
+            a = trets.cell(idx, "ltp_pre")
+            b = trets.cell(idx, "bsp")
+            cells.append((code, "thin_band", lab, "ltp_pre", a))
+            cells.append((code, "thin_band", lab, "bsp", b))
+            thin_rows.append({"cell": lab, "n": a["bets"], "strike": a.get("strike"), "implied_raw": a.get("implied_raw"),
+                              "back_ltp_pre": compact(a), "tick_down_c5": a.get("roi_c5_tick_down"), "back_bsp": compact(b)})
+        tmk = thin.drop_duplicates("market_id")
+        out({"section": "thin_markets", "country": code, "markets": int(len(tmk)),
+             "note": "markets with >=1 runner never traded pre-off; traded runners only; book over traded runners "
+                     "understates the true book", "book_traded_runners_median": r4(tmk["book"].median()),
+             "median_field": r4(tmk["field_size"].median()), "share_harness": r4(tmk["harness"].mean()),
+             "rows": thin_rows})
+        del trets
     fav1 = next(c for c in cells if c[0] == code and c[2] == "fav1" and c[3] == "ltp_pre")[4]
     b50 = next(c for c in cells if c[0] == code and c[2] == "50+" and c[3] == "ltp_pre")[4]
     summary = {"country": code, "markets": info["markets_used"], "runners": info["runners_used"],
@@ -552,13 +666,16 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
                "share_markets_all_traded": info["share_markets_all_runners_traded"],
                "book_median": books["book_ltp_pre"]["median"], "book_q90": books["book_ltp_pre"]["q90"],
                "book_bsp_median": books["book_bsp"].get("median"),
-               "beta_full": flb["beta_full_sample"], "wf_ll_gain": [r4(gm), r4(gm_se)],
+               "beta_full": flb["beta_full_sample"], "beta_z_vs_1": flb["beta_z_vs_1"],
+               "thin_markets": info["thin_markets"],
+               "thin_fav1_roi_c0_c5": ([thin_rows[0]["back_ltp_pre"][1], thin_rows[0]["back_ltp_pre"][2]] if thin_rows else None),
+               "wf_ll_gain": [r4(gm), r4(gm_se)],
                "shin_ll_gain": [r4(gs), r4(gs_se)],
                "fav1_roi_c0_c5": [fav1.get("roi_c0"), fav1.get("roi_c5")], "fav1_se": fav1.get("se"),
                "band50plus_roi_c0": b50.get("roi_c0"), "band50plus_se": b50.get("se"),
                "flb_index": [flb_index["index_short_minus_long"], flb_index["index_se"]],
                "seconds": round(time.time() - t0, 1)}
-    del df, rets
+    del df, thin, rets
     gc.collect()
     return summary
 
