@@ -391,7 +391,11 @@ def bet_cell(g: pd.DataFrame, mid: pd.Timestamp, price_col: str = "ltp_pre") -> 
     res["roi_c5_tick_down"] = r4(net_returns(tick_down(price), won, 0.05).mean())
     has_bsp = g["bsp"].notna().to_numpy() & (g["bsp"].to_numpy(dtype=float) > 1)
     if has_bsp.sum() > 1:
-        res["roi_c5_bsp"] = r4(net_returns(g["bsp"].to_numpy(dtype=float)[has_bsp], won[has_bsp], 0.05).mean())
+        rb = net_returns(g["bsp"].to_numpy(dtype=float)[has_bsp], won[has_bsp], 0.05)
+        res["roi_c5_bsp"] = r4(rb.mean())
+        res["roi_c5_bsp_se"] = r4(rb.std(ddof=1) / math.sqrt(len(rb)))
+        res["roi_c5_bsp_halves"] = [r4(rb[first[has_bsp]].mean()) if first[has_bsp].sum() else None,
+                                    r4(rb[~first[has_bsp]].mean()) if (~first[has_bsp]).sum() else None]
         res["bsp_bets"] = int(has_bsp.sum())
         res["median_ltp_pre_over_bsp"] = r4(np.median(g["ltp_pre"].to_numpy(dtype=float)[has_bsp] / g["bsp"].to_numpy(dtype=float)[has_bsp]))
     res["share_book_below_0.97"] = r4((g["book"] < 0.97).mean())
@@ -416,7 +420,8 @@ def half_z(cell: dict, h: int) -> float:
 def compact(c: dict) -> dict:
     keys = ("bets", "roi_c0", "roi_c5", "roi_c8", "se", "halves_roi_c5", "halves_se_c5", "halves_bets",
             "positive_both_halves", "strike", "implied_shin", "model_prob", "median_price",
-            "roi_c5_tick_down", "roi_c5_bsp", "median_ltp_pre_over_bsp", "share_book_below_0.97")
+            "roi_c5_tick_down", "roi_c5_bsp", "roi_c5_bsp_se", "roi_c5_bsp_halves", "median_ltp_pre_over_bsp",
+            "share_book_below_0.97")
     return {k: c.get(k) for k in keys if k in c}
 
 
@@ -447,12 +452,14 @@ def log_loss_gain(test: pd.DataFrame, mid: pd.Timestamp) -> dict:
     gain = (-np.log(w["p_shin"].clip(1e-12)) + np.log(w["p_model"].clip(1e-12))).to_numpy()
     first = (w["date"] < mid).to_numpy()
     se = gain.std(ddof=1) / math.sqrt(len(gain))
-    res = {"races": int(len(w)), "ll_market_shin": r4(-np.log(w["p_shin"].clip(1e-12)).mean()),
-           "ll_model": r4(-np.log(w["p_model"].clip(1e-12)).mean()),
-           "gain_per_race": r4(gain.mean()), "gain_se": r4(se), "gain_z": r4(gain.mean() / se),
-           "gain_halves": [r4(gain[first].mean()), r4(gain[~first].mean())],
-           "gain_halves_se": [r4(gain[first].std(ddof=1) / math.sqrt(max(first.sum(), 2))),
-                              r4(gain[~first].std(ddof=1) / math.sqrt(max((~first).sum(), 2)))]}
+    r6 = lambda x: round(float(x), 6)
+    h_se = [gain[first].std(ddof=1) / math.sqrt(max(first.sum(), 2)), gain[~first].std(ddof=1) / math.sqrt(max((~first).sum(), 2))]
+    res = {"races": int(len(w)), "ll_market_shin": r6(-np.log(w["p_shin"].clip(1e-12)).mean()),
+           "ll_model": r6(-np.log(w["p_model"].clip(1e-12)).mean()),
+           "gain_per_race": r6(gain.mean()), "gain_se": r6(se), "gain_z": r4(gain.mean() / se),
+           "gain_halves": [r6(gain[first].mean()), r6(gain[~first].mean())],
+           "gain_halves_se": [r6(h_se[0]), r6(h_se[1])],
+           "gain_halves_z": [r4(gain[first].mean() / h_se[0]), r4(gain[~first].mean() / h_se[1])]}
     res["positive_2se_overall"] = bool(gain.mean() > 2 * se)
     res["positive_2se_both_halves"] = bool(all(g > 2 * s for g, s in zip(res["gain_halves"], res["gain_halves_se"])))
     # by code
@@ -590,7 +597,7 @@ def main() -> int:
             # coherent book only (last traded prices plausibly still live)
             coh = test[(test["book"] >= 0.98) & (test["book"] <= 1.05)]
             rows = []
-            for k in (0.0, 0.05, 0.10):
+            for k in K_VALUES:
                 g = coh[coh["edge"] > 1 + k]
                 c = bet_cell(g, tmid)
                 rows.append({"k": k, **compact(c)})
@@ -607,7 +614,7 @@ def main() -> int:
             out({"section": "bets_by_code", "variant": tag, "rows": rows})
             # settled at BSP as the decision price (SP bet on the same selections)
             rows = []
-            for k in (0.0, 0.05, 0.10):
+            for k in K_VALUES:
                 g = test[(test["edge"] > 1 + k) & test["bsp"].notna() & (test["bsp"] > 1)]
                 c = bet_cell(g, tmid, price_col="bsp")
                 rows.append({"k": k, **{kk: c.get(kk) for kk in ("bets", "roi_c0", "roi_c5", "roi_c8", "se", "halves_roi_c5", "positive_both_halves")}})
