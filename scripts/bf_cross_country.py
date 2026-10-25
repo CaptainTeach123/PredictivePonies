@@ -25,7 +25,9 @@ one country at a time:
     sample, with SE, and per half), the walk-forward log-loss gain of the
     recalibrated probabilities vs the proportional market (per-race paired SE),
     the same for Shin, and a value rule from the walk-forward probabilities
-    (back when p_model * ltp_pre - 1 >= 5% / 10%; lay when <= -10%);
+    (back when p_model * ltp_pre - 1 >= 5% / 10%; lay when <= -10%; runners
+    priced above 50 are excluded from the rule because a last trade at 200 or
+    1000 is not a bettable price);
   * a descriptive FLB index: ROI before commission of runners under 4.5 minus
     runners at 15+, with SE.
 
@@ -67,6 +69,7 @@ FIELD_LABELS = ["2-5", "6-8", "9-11", "12+"]
 RANKS = 6
 VALUE_MARGINS = (0.05, 0.10)
 LAY_MARGIN = 0.10
+VALUE_MAX_PRICE = 50.0  # value rules ignore runners above this: a last trade at 200-1000 is not a bettable price
 FDR = 0.05
 SHORT_MAX, LONG_MIN = 4.5, 15.0  # FLB index bands
 
@@ -239,7 +242,7 @@ def load_country(code: str, end: str | None) -> tuple[pd.DataFrame, dict]:
         "share_markets_all_runners_traded": r4(per_market["all_traded"].mean()),
         "share_markets_all_runners_t30": r4(per_market["all_t30"].mean()),
         "share_markets_harness": r4(per_market["harness"].mean()),
-        "dead_heat_markets": int((per_market.set_index("market_id").index.map(wins.groupby(mk).first()) > 1).sum()),
+        "dead_heat_markets": int((wins.groupby(mk).first() > 1).sum()),
     }
 
     # analysis set: one winner and every runner traded before the off
@@ -518,7 +521,8 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
     out({"section": "favourite_longshot", "country": code, **flb})
 
     # value rule from the walk-forward probabilities (burn-in excluded)
-    edge = np.where(scored, p_model * lp - 1.0, np.nan)
+    edge = np.where(scored & (lp <= VALUE_MAX_PRICE), p_model * lp - 1.0, np.nan)
+    scored = ~np.isnan(edge)
     value_rows = []
     for m in VALUE_MARGINS:
         idx = np.flatnonzero(scored & (edge >= m))
@@ -526,7 +530,7 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
         b = rets.cell(idx, "bsp")
         cells.append((code, "value", f"edge>={m:g}", "ltp_pre", a))
         cells.append((code, "value", f"edge>={m:g}", "bsp", b))
-        value_rows.append({"rule": f"back if p_model*ltp_pre-1 >= {m:g}", "n": a["bets"],
+        value_rows.append({"rule": f"back if p_model*ltp_pre-1 >= {m:g} (ltp_pre <= {VALUE_MAX_PRICE:g})", "n": a["bets"],
                            "median_price": a.get("median_price"), "strike": a.get("strike"),
                            "back_ltp_pre": compact(a), "tick_down_c5": a.get("roi_c5_tick_down"), "back_bsp": compact(b)})
     idx = np.flatnonzero(scored & (edge <= -LAY_MARGIN))
@@ -534,7 +538,7 @@ def analyse_country(code: str, end: str | None, burn_in: int, cells: list, lays:
     b = rets.cell(idx, "bsp")
     lays.append((code, "value", f"edge<=-{LAY_MARGIN:g}", "ltp_pre", a))
     lays.append((code, "value", f"edge<=-{LAY_MARGIN:g}", "bsp", b))
-    value_rows.append({"rule": f"lay if p_model*ltp_pre-1 <= -{LAY_MARGIN:g}", "n": a["bets"],
+    value_rows.append({"rule": f"lay if p_model*ltp_pre-1 <= -{LAY_MARGIN:g} (ltp_pre <= {VALUE_MAX_PRICE:g})", "n": a["bets"],
                        "median_price": a.get("median_price"),
                        "lay_ltp_pre_c5": [a.get("lay_roi_c5"), a.get("lay_se"), *(a.get("lay_halves_roi_c5") or [])],
                        "lay_bsp_c5": [b.get("lay_roi_c5"), b.get("lay_se"), *(b.get("lay_halves_roi_c5") or [])]})
