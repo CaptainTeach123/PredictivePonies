@@ -1,29 +1,38 @@
-# Downloads purchased Betfair historical files into the Actions cache and runs
+# Betfair Exchange history -> compact runner table in the Actions cache, then
 # the exchange backtests. Nothing is committed (licensed data). Logs show
 # counts and summary numbers only.
 #
-# Setup: Settings -> Secrets and variables -> Actions
-#   secrets  BETFAIR_USERNAME, BETFAIR_PASSWORD, BETFAIR_APP_KEY
-#   variable BETFAIR_SSO_URL (optional; Australian accounts may need
-#            https://identitysso.betfair.com.au/api/login)
-# Betfair may refuse logins from GitHub's (US) servers; if so, run
-# scripts/betfair_download.py on your own computer instead.
+# Two sources:
+#   mode=import  : a Betfair My Data TAR shared on Google Drive ("anyone with
+#                  the link"); give its file id. No Betfair login needed.
+#   mode=api     : download purchased files with the Historical Data API.
+#                  Secrets BETFAIR_USERNAME, BETFAIR_PASSWORD, BETFAIR_APP_KEY;
+#                  variable BETFAIR_SSO_URL (optional). Betfair may refuse
+#                  logins from GitHub's (US) servers.
+#   mode=backtest: re-run the backtests on the cached table.
 name: Betfair history
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        type: choice
+        options: [import, backtest, api]
+        default: backtest
+      drive_file_id:
+        description: "import: Google Drive file id of the TAR"
+        default: ""
       from:
-        description: "First month (YYYY-MM)"
+        description: "api: first month (YYYY-MM)"
         default: "2025-10"
       to:
-        description: "Last month (YYYY-MM)"
+        description: "api: last month (YYYY-MM)"
         default: "2026-09"
       countries:
-        description: "Comma-separated country codes"
+        description: "api: comma-separated country codes"
         default: "AU"
       dry_run:
-        description: "Only list purchased data and basket size"
+        description: "api: only list purchased data and basket size"
         type: boolean
         default: true
 
@@ -44,23 +53,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Restore store
+      - run: pip install -q -r requirements.txt
+
+      - name: Restore table
         uses: actions/cache/restore@v4
         with:
           path: data/raw/betfair
           key: betfair-store-${{ github.run_id }}
           restore-keys: betfair-store-
-      - name: Download
+
+      - name: Import TAR from Google Drive
+        if: inputs.mode == 'import'
+        env:
+          FILE_ID: ${{ inputs.drive_file_id }}
+        run: |
+          test -n "$FILE_ID" || { echo "drive_file_id is required"; exit 1; }
+          curl -sSL --retry 5 -o "$RUNNER_TEMP/data.tar" \
+            "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t"
+          ls -l "$RUNNER_TEMP/data.tar" | awk '{print "downloaded bytes:", $5}'
+          python scripts/betfair_tar_to_table.py "$RUNNER_TEMP/data.tar" \
+            --out data/raw/betfair/runners.csv.gz 2>&1 | grep -v LIBARCHIVE | tail -1
+          rm -f "$RUNNER_TEMP/data.tar"
+
+      - name: Download with the Historical Data API
+        if: inputs.mode == 'api'
         run: >
           python scripts/betfair_download.py --from ${{ inputs.from }} --to ${{ inputs.to }}
           --countries ${{ inputs.countries }} ${{ inputs.dry_run && '--dry-run' || '' }}
-      - name: Backtest (summary numbers only)
-        if: ${{ !inputs.dry_run }}
+
+      - name: Backtests (summary numbers only)
+        if: inputs.mode != 'api' || !inputs.dry_run
         run: |
-          pip install -q -r requirements.txt
-          python scripts/betfair_backtest.py
-      - name: Save store
-        if: always() && !inputs.dry_run
+          T=data/raw/betfair/runners.csv.gz
+          ARGS=$([ -f $T ] && echo "--table $T" || echo "")
+          for code in gallops harness; do
+            echo "== AU $code"
+            python scripts/betfair_backtest.py $ARGS --country AU --code $code --commission 0.08
+          done
+
+      - name: Save table
+        if: always() && (inputs.mode == 'import' || (inputs.mode == 'api' && !inputs.dry_run))
         uses: actions/cache/save@v4
         with:
           path: data/raw/betfair

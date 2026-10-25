@@ -58,6 +58,15 @@ jobs:
           key: formfav-store-${{ github.run_id }}
           restore-keys: formfav-store-
 
+      - name: Keep the Betfair table cache alive (entries unused for 7 days are evicted)
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/betfair
+          key: betfair-store-keepalive
+          restore-keys: betfair-store-
+
       - name: Collect
         if: github.event_name == 'schedule' || inputs.mode == 'collect'
         run: >
