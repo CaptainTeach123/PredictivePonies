@@ -292,7 +292,25 @@ def main() -> int:
             zs.append(m / math.sqrt(var / n))
         min_half_z.append(min(zs))
         both += all(z > 2 for z in zs)
-    out({"section": "3_alternative_splits_c5", "by_year": by_year, "by_half_year": by_hy, "odd_even_iso_weeks": by_week,
+    # time trend: weighted least squares of the half-year means on time (half-years from 2016H2), and the last two years pooled
+    hy_keys = sorted(by_hy)
+    t = np.arange(len(hy_keys), dtype=float)
+    y = np.array([by_hy[k]["roi"] for k in hy_keys])
+    w = np.array([1.0 / by_hy[k]["se_cl_date"] ** 2 for k in hy_keys])
+    tm, ym = (w * t).sum() / w.sum(), (w * y).sum() / w.sum()
+    slope = (w * (t - tm) * (y - ym)).sum() / (w * (t - tm) ** 2).sum()
+    slope_se = math.sqrt(1.0 / (w * (t - tm) ** 2).sum())
+    last2 = g[g["year"] >= 2019]
+    dl = paired(last2, C_TEST)
+    last2_cell = basic(dl, last2["won_b"].to_numpy())
+    last2_cell["se_cl_date"] = r4(cluster_se(dl, last2["date"].to_numpy()))
+    live2 = last2[(last2["book"] >= 0.98) & (last2["book"] <= 1.03)]
+    dl2 = paired(live2, C_TEST)
+    last2_live = basic(dl2, live2["won_b"].to_numpy())
+    last2_live["se_cl_date"] = r4(cluster_se(dl2, live2["date"].to_numpy()))
+    trend = {"half_year_wls_slope_per_half_year": r4(slope), "slope_se": r4(slope_se), "slope_z": r4(slope / slope_se),
+             "pooled_2019_2020": last2_cell, "pooled_2019_2020_live_book_0.98_1.03": last2_live}
+    out({"section": "3_alternative_splits_c5", "by_year": by_year, "by_half_year": by_hy, "odd_even_iso_weeks": by_week, "trend": trend,
          "random_day_half_splits": {"splits": a.splits, "share_both_halves_gt_2se": r4(both / a.splits),
                                     "min_half_z_q10_q50_q90": [r4(v) for v in np.quantile(min_half_z, [0.1, 0.5, 0.9])]}})
 
