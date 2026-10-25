@@ -346,6 +346,40 @@ def main() -> int:
                               **cell(df, top, "best_persist_0", mid),
                               "and_value_vs_consensus": cell(df, top & guarded, "best_persist_0", mid)}))
     held15 = book_quotes  # noqa: F841 (documented below)
+    # 2b-7. feed alignment and calibration per bookmaker per group [A-63]: if a bookmaker's prices are attached to
+    # the wrong runners, its log prices will not correlate with the other books' within a race, and betting every
+    # runner at its price will lose far more than its margin. A consensus built on such a feed is meaningless.
+    for grp, g in df.groupby("group"):
+        books_g = pd.Series([b for d_ in g["books_0"] for b in d_]).value_counts()
+        prof = {}
+        for b in books_g.index:
+            px = g["books_0"].map(lambda d_, b=b: d_.get(b, math.nan))
+            has = px.notna()
+            if has.sum() < 200:
+                continue
+            others = g["books_0"].map(lambda d_, b=b: float(np.median([v for k, v in d_.items() if k != b])) if len(d_) > 1 else math.nan)
+            both = has & others.notna()
+            corr = None
+            if both.sum() > 50:
+                x, y = np.log(px[both].to_numpy(dtype=float)), np.log(others[both].to_numpy(dtype=float))
+                corr = round(float(np.corrcoef(x, y)[0, 1]), 3)
+            sub = g[has]
+            full = sub.groupby("race_id")["race_id"].transform("size") == sub["field"]
+            over = (1 / px[has][full]).groupby(sub[full]["race_id"]).sum()
+            prof[b] = {"runner_coverage": round(float(has.mean()), 3),
+                       "log_price_corr_with_other_books": corr, "runners_with_other_books": int(both.sum()),
+                       "own_book_pct_median": round(float(over.median()), 4) if len(over) else None,
+                       "every_runner_at_its_price": summary(np.where(sub["won"] == 1, px[has] - 1, -1.0)),
+                       "runners_only_this_book": round(float((g["books_0"].map(len) == 1)[has].mean()), 3)}
+        print(json.dumps({"test": "feed_alignment_by_group", "group": grp, "books": prof}))
+    # the guarded value rule again, requiring at least two OTHER aligned books in the consensus [A-63]
+    n_books = df["books_0"].map(len)
+    for grp in sorted(df["group"].unique()):
+        m = guarded & (df["group"] == grp) & (n_books >= 3)
+        if m.sum() >= 20:
+            print(json.dumps({"test": "value_held_capped_at_least_3_books", "group": grp, **cell(df, m, "best_persist_0", mid)}))
+    m = guarded & (n_books >= 3)
+    print(json.dumps({"test": "value_held_capped_at_least_3_books", "group": "ALL", **cell(df, m, "best_persist_0", mid)}))
     # 2b'. the same, per code and country (soft markets differ) [A-58]
     for grp, g in df.groupby("group"):
         if g["race_id"].nunique() < 50:
