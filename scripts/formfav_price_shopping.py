@@ -91,6 +91,11 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         per_book = [shin([jump[r["number"]][b] for r in runners]) for b in books]
         fair_books = np.mean(per_book, axis=0) if per_book else fair_median
         race_id = f"{slug(card['track'])}-{card['date']}-{int(card['raceNumber'])}"
+        fair_early = {}
+        for m in EARLY:  # consensus at T, using only prices known at T
+            meds = [float(np.median(list(early[m][r["number"]].values()))) if r["number"] in early[m] else math.nan
+                    for r in runners]
+            fair_early[m] = shin(meds) if not any(math.isnan(x) for x in meds) else np.full(len(runners), math.nan)
         for i, r in enumerate(runners):
             n_ = r["number"]
             best_book = max(jump[n_], key=jump[n_].get)
@@ -99,10 +104,13 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
                    "median": median[i], "best": best[i], "best_book": best_book, "n_books": len(jump[n_]),
                    "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
                    "sum_inv_best": sum(1 / b for b in best)}
+            row["books_0"] = dict(jump[n_])
             for m in EARLY:
                 q = early[m].get(n_)
                 row[f"best_{m}"] = max(q.values()) if q else math.nan
                 row[f"median_{m}"] = float(np.median(list(q.values()))) if q else math.nan
+                row[f"fair_{m}"] = float(fair_early[m][i])
+                row[f"books_{m}"] = dict(q) if q else {}
             rows.append(row)
     return rows
 
@@ -161,6 +169,36 @@ def main() -> int:
             m = have & (df[col] * df["fair_median"] > 1 + k)
             print(json.dumps({"test": "early_best_vs_fair_at_jump", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
         print(json.dumps({"test": "early_best_all_runners", "minutes_before": mins, **cell(df, have, col, mid)}))
+    # 2b. BETTABLE: value by the consensus known at the time of the bet [A-56]
+    for mins in EARLY:
+        for k in (0.0, 0.05, 0.1, 0.2):
+            m = (df[f"best_{mins}"] * df[f"fair_{mins}"] > 1 + k)
+            print(json.dumps({"test": "value_at_time_of_bet", "minutes_before": mins, "k": k,
+                              **cell(df, m.fillna(False), f"best_{mins}", mid)}))
+    # 2c. BETTABLE: momentum - firmed between 120 and 30 minutes out, bet at the best price 30 minutes out
+    ratio = df["median_30"] / df["median_120"]
+    for mm in (0.05, 0.1, 0.2):
+        firm = (ratio < 1 - mm).fillna(False)
+        print(json.dumps({"test": "firmed_120_to_30", "firmed_at_least": mm, **cell(df, firm, "best_30", mid)}))
+        both = firm & (df["best_30"] * df["fair_30"] > 1).fillna(False)
+        print(json.dumps({"test": "firmed_120_to_30_and_value_at_30", "firmed_at_least": mm, **cell(df, both, "best_30", mid)}))
+        drift = (ratio > 1 + mm).fillna(False)
+        print(json.dumps({"test": "drifted_120_to_30", "drifted_at_least": mm, **cell(df, drift, "best_30", mid)}))
+    # 2d. BETTABLE: a lagging bookmaker - best price well above a given bookmaker's price at the same time
+    for mins in (0, 30):
+        books = pd.Series([b for d_ in df[f"books_{mins}"] for b in d_]).value_counts()
+        for b in books[books >= 0.5 * len(df)].index:
+            px = df[f"books_{mins}"].map(lambda d_, b=b: d_.get(b, math.nan))
+            for r in (1.1, 1.2):
+                m = ((df[f"best_{mins}"] / px >= r) & (df["best_book"] != b if mins == 0 else True)).fillna(False)
+                print(json.dumps({"test": "best_vs_bookmaker", "minutes_before": mins, "bookmaker": b, "ratio_at_least": r,
+                                  **cell(df, m, f"best_{mins}", mid)}))
+    # 2e. DIAGNOSTIC: how often does the early best price beat the closing fair price, by early-price band
+    for mins in EARLY:
+        beat = (df[f"best_{mins}"] * df["fair_median"] > 1)
+        print(json.dumps({"test": "share_of_early_prices_beating_close", "minutes_before": mins,
+                          "share": round(float(beat.mean()), 4),
+                          "by_band": {str(b): round(float(g.mean()), 3) for b, g in beat.groupby(pd.cut(df[f"best_{mins}"], [1, 2, 3, 4.5, 6.5, 10, 15, 25, 1e9]), observed=True)}}))
     # 3. pure dispersion
     for r in (1.0, 1.1, 1.2, 1.3, 1.5):
         print(json.dumps({"test": "best_over_median", "ratio_at_least": r, **cell(df, df["best"] / df["median"] >= r, "best", mid)}))
