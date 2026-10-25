@@ -316,6 +316,28 @@ def analyse(code: str, burn_in: int, boot: int) -> dict:
         "reading": "in-play leakage into ltp_pre would make winners' ltp_pre SHORTER than BSP (ratio > 1); "
                    "stale pre-off trades make it LONGER (ratio < 1)",
     }
+    # withdrawal fingerprint: removed runners are dropped silently, so a late scratch leaves the
+    # remaining last trades too long (book < 1). A gap in the saddlecloth numbers (max program >
+    # field_size) marks a market with a removed runner (at any time); within-market dispersion of
+    # log(BSP/ltp_pre) is low when every price shortened by the same factor (one removal) and high
+    # when the last trades are individually stale.
+    prog = pd.read_parquet(orig.SPLIT_DIR / f"{code.lower()}_win.parquet", columns=["market_id", "selection_id", "program"])
+    prog = prog.drop_duplicates(["market_id", "selection_id"])
+    prog["program"] = pd.to_numeric(prog["program"], errors="coerce")
+    pmax = prog.groupby("market_id")["program"].max()
+    gap = (pmax.reindex(mk["market_id"]).to_numpy() > mk["field_size"].to_numpy())
+    gap_s = pd.Series(gap, index=mk["market_id"].to_numpy())
+    lr = np.where(okb, np.log(np.where(okb, bsp, 1.0) / lp), np.nan)
+    disp = pd.Series(lr).groupby(market).std()
+    sel_mk = per_mk.index.to_numpy()
+    normal_mk = mk.loc[(mk["book"] >= 0.98) & (mk["book"] <= 1.02), "market_id"].to_numpy()
+    leak["withdrawal_fingerprint"] = {
+        "share_selected_markets_with_saddlecloth_gap": r4(gap_s.reindex(sel_mk).mean()),
+        "share_normal_book_markets_with_saddlecloth_gap": r4(gap_s.reindex(normal_mk).mean()),
+        "share_all_strict_markets_with_saddlecloth_gap": r4(gap_s.mean()),
+        "within_market_sd_log_bsp_over_ltp_pre_selected_median": r4(disp.reindex(sel_mk).median()),
+        "within_market_sd_log_bsp_over_ltp_pre_normal_book_median": r4(disp.reindex(normal_mk).median()),
+    }
     has_t30 = df["has_t30"].to_numpy()
     t30 = df["ltp_t30"].to_numpy(dtype=float)
     if has_t30[sel].any():

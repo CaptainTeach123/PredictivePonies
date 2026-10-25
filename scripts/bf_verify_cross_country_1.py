@@ -173,10 +173,10 @@ def verify_country(code: str, margin: float, burn_in: int) -> None:
     k = max(1, int(round(0.01 * len(r_b5))))
     trimmed = np.delete(r_b5, order[:k])
     ratio = bsp[ib] / lp[ib]
-    band = pd.cut(lp[ib], cc.PRICE_BANDS, right=False, labels=cc.BAND_LABELS).astype(str)
+    band = np.asarray(pd.cut(lp[ib], cc.PRICE_BANDS, right=False, labels=cc.BAND_LABELS).astype(str))
     by_band = {}
     for lab in cc.BAND_LABELS:
-        m = (band == lab).to_numpy()
+        m = band == lab
         if m.sum() >= 2:
             mm, ss, gg = cluster_se(r_b5[m], mk[ib][m])
             ml, sl, _ = cluster_se(rets.back["ltp_pre"][0.05][ib][m], mk[ib][m])
@@ -214,6 +214,28 @@ def verify_country(code: str, margin: float, burn_in: int) -> None:
         else:
             sub[name] = {"bets": int(len(ii))}
     out({"section": "fresh_price_subsets", "country": code, **sub})
+
+    # 7b. is the LTP-vs-BSP gap market-wide (every runner shortened by about the same factor, as
+    #     after a late withdrawal/reduction factor) or runner-specific (thin-market staleness)?
+    #     Within-market SD of log(bsp/ltp_pre) in the selected markets vs normal markets (book within 1%).
+    lr = np.where(bsp_ok_all, np.log(np.where(bsp_ok_all, bsp, 1.0) / lp), np.nan)
+    sel_mk = np.zeros(len(df), dtype=bool)
+    sel_mk[idx] = True
+    sel_mk = pd.Series(sel_mk).groupby(codes).transform("max").to_numpy().astype(bool)
+    normal_mk = np.abs(book - 1.0) <= 0.01
+    disp = {}
+    for name, mask in (("selected_markets", sel_mk & full_bsp), ("normal_markets_book_within_1pct", normal_mk & full_bsp)):
+        s = pd.Series(lr[mask]).groupby(codes[mask])
+        sd = s.std(ddof=1).dropna()
+        mean_lr = s.mean()
+        disp[name] = {"markets": int(sd.size), "median_within_market_sd_log_ratio": r4(sd.median()),
+                      "median_market_mean_log_ratio": r4(mean_lr.median()),
+                      "share_markets_sd_under_0.1": r4((sd < 0.1).mean())}
+    rem = pd.read_parquet(cc.SPLIT_DIR / f"{code.lower()}_win.parquet", columns=["market_id", "field_size", "won"])
+    disp["removed_runners_in_data"] = {"rows_won_nan": int(rem["won"].isna().sum()),
+                                       "markets_rows_ne_field_size": int((rem.groupby("market_id").size()
+                                                                          != rem.groupby("market_id")["field_size"].first()).sum())}
+    out({"section": "gap_dispersion", "country": code, **disp})
 
     # 7. date concentration
     days = pd.Series(idx).groupby(dt[idx]).size().sort_values(ascending=False)
