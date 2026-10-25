@@ -238,6 +238,37 @@ def main() -> int:
                           "every_runner_at_its_price": summary(np.where(sub["won"] == 1, px[has] - 1, -1.0)),
                           "when_top_price": cell(df, is_best, "best", mid),
                           "when_top_price_and_value_vs_consensus": cell(df, val, "best", mid)}))
+    # 2b-4. the sharpest bookmaker, and value measured against it [A-60]
+    won = df["won"].to_numpy()
+    ls2 = lambda p, y: float(np.mean(np.where(y == 1, np.log(np.clip(p, 1e-9, 1)), np.log(np.clip(1 - p, 1e-9, 1)))))
+    halves = [(df["date"] < mid).to_numpy(), (df["date"] >= mid).to_numpy()]
+    profile = {}
+    for b in allb.index:
+        pb = df["own_fair_0"].map(lambda d_, b=b: d_.get(b, math.nan)).to_numpy(dtype=float)
+        has = ~np.isnan(pb)
+        if has.sum() < 500:
+            continue
+        profile[b] = {"runners_with_full_book": int(has.sum()),
+                      "log_score_own": round(ls2(pb[has], won[has]), 5),
+                      "log_score_consensus_same_runners": round(ls2(df["fair_median"].to_numpy()[has], won[has]), 5),
+                      "log_score_own_by_half": [round(ls2(pb[has & h], won[has & h]), 5) if (has & h).sum() > 100 else None for h in halves]}
+    print(json.dumps({"test": "bookmaker_sharpness", "higher_is_better": True, "books": profile}))
+    for fit, test in ((0, 1), (1, 0)):
+        ranked = sorted((b for b in profile if profile[b]["log_score_own_by_half"][fit] is not None),
+                        key=lambda b: -profile[b]["log_score_own_by_half"][fit])
+        if not ranked:
+            continue
+        sharp = ranked[0]
+        ps = df["own_fair_0"].map(lambda d_, b=sharp: d_.get(b, math.nan))
+        for k in (0.0, 0.05, 0.1):
+            m = (halves[test] & (df["best_persist_0"] * ps > 1 + k).fillna(False).to_numpy()
+                 & (df["best"] / df["median"] <= 1.5).fillna(False).to_numpy() & (df["best_book"] != sharp).to_numpy())
+            g = df[m]
+            ret = np.where(g["won"] == 1, g["best_persist_0"] - 1, -1.0)
+            print(json.dumps({"test": "value_vs_sharpest_book", "sharpest_fitted_on_half": fit + 1, "tested_on_half": test + 1,
+                              "sharpest": sharp, "k": k, **summary(ret),
+                              "strike": round(float(g["won"].mean()), 4) if len(g) else None,
+                              "ev_implied_by_sharpest": round(float((g["best_persist_0"] * ps[m] - 1).mean()), 4) if len(g) else None}))
     # 2b'. the same, per code and country (soft markets differ) [A-58]
     for grp, g in df.groupby("group"):
         if g["race_id"].nunique() < 50:

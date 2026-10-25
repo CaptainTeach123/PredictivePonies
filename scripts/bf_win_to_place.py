@@ -487,6 +487,23 @@ def main() -> int:
     hasc = ~np.isnan(wfc)
     res["blend_calibrated_walk_forward"] = {**paired(wfc[hasc], ll_mkt[hasc], fh[hasc]),
                                             "median_weight_on_market": float(np.median(list(chosen_c.values()))) if chosen_c else None}
+    # sterner benchmark (post-race price, so a benchmark only): place BSP-implied probabilities
+    fb = full.copy()
+    fb["all_bsp"] = fb.groupby("race")["bsp_pl"].transform(lambda s: s.notna().all() and (s > 1).all())
+    fb = fb[fb["all_bsp"] & fb["p_cal"].notna()].copy()
+    fb["q_bsp"] = (1 / fb["bsp_pl"]) * fb["n_winners"] / fb.groupby("race")["bsp_pl"].transform(lambda s: (1 / s).sum())
+    yb = fb["placed"].to_numpy(dtype=float)
+    rcb = pd.factorize(fb["race"])[0]
+    fhb = (fb.drop_duplicates("race")["date"] < mid).to_numpy()
+    ll_bsp = logloss_race(fb["q_bsp"].to_numpy(), yb, rcb)
+    ll_cal_b = logloss_race(fb["p_cal"].to_numpy(), yb, rcb)
+    ll_mkt_b = logloss_race(fb["q_mkt"].to_numpy(), yb, rcb)
+    res["benchmark_place_bsp"] = {"races": int(len(ll_bsp)), "per_race_logloss_bsp": r4(ll_bsp.mean()),
+                                  "ltp_market_vs_bsp": paired(ll_mkt_b, ll_bsp, fhb),
+                                  "derived_calibrated_vs_bsp": paired(ll_cal_b, ll_bsp, fhb)}
+    for w in (0.5, 0.75, 0.9):
+        q = w * fb["q_bsp"].to_numpy() + (1 - w) * fb["p_cal"].to_numpy()
+        res["benchmark_place_bsp"][f"blend_w_bsp_{w}_vs_bsp"] = paired(logloss_race(q, yb, rcb), ll_bsp, fhb)
     out(res)
 
     # ---- (c) bets: back the place at ltp_pl when ltp_pl * p > 1 + k, p = p_fair or p_cal
@@ -606,7 +623,7 @@ def main() -> int:
     out({"section": "d_mirror_win_bets", "cells_tested": len(mcells), "cells": mcells,
          "positive_cells": [c["rule"] for c in mcells if c["positive"]]})
     out({"section": "totals", "bet_cells_tested_total": n_cells + len(mcells),
-         "probability_tests": 9, "runtime_s": round(time.time() - t0, 1)})
+         "probability_tests": 13, "runtime_s": round(time.time() - t0, 1)})
     return 0
 
 
