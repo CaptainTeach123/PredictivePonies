@@ -255,8 +255,8 @@ def per_race_logloss(df: pd.DataFrame, p: np.ndarray) -> tuple[np.ndarray, np.nd
     codes, n = _race_codes(df["race_id"])
     f = df["f"].to_numpy()
     ll = np.bincount(codes, weights=f * -np.log(np.clip(p, 1e-15, None)), minlength=n)
-    first_start = np.full(n, np.nan)
-    starts = df["start"].to_numpy().astype("datetime64[ns]").astype("int64").astype(float)
+    first_start = np.full(n, np.inf)
+    starts = df["start"].dt.tz_localize(None).to_numpy().astype("datetime64[ns]").astype("int64").astype(float)
     np.minimum.at(first_start, codes, starts)
     return ll, first_start
 
