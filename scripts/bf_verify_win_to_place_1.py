@@ -281,9 +281,12 @@ def main() -> int:
                      "median_place_bsp_over_ltp": r4((g["bsp_pl"] / g["ltp_pl"]).median()),
                      "median_win_bsp_over_ltp": r4((g["bsp_win"] / g["ltp_win"]).median()),
                      "mean_p_cal": r4(g["p_cal"].mean()), "strike": r4(g["placed"].mean()), "mean_1_over_bsp": r4((1 / g["bsp_pl"]).mean())})
+    thin = sel["race_priced_share"] < 0.5
+    rth = w2p.returns(sel.loc[thin, "ltp_pl"], sel.loc[thin, "placed"], sel.loc[thin, "dh"], 0.05)
     out({"section": "4_liquidity_and_staleness_gradient", "by_bsp_availability": rows, "by_edge_bucket_bsp_subset": grad,
-         "share_selected_in_races_with_lt_half_runners_traded_in_place": r4(
-             (sel.groupby("race")["ltp_pl"].transform(lambda s: (s.notna() & (s > 1)).mean()) < 0.5).mean())})
+         "share_selected_in_races_with_lt_half_runners_traded_in_place": r4(thin.mean()),
+         "roi_c5_at_ltp_in_those_thin_races": basic(rth) if thin.sum() > 1 else None,
+         "share_blind_priced_runners_in_races_with_lt_half_traded": r4((bettable["race_priced_share"] < 0.5).mean())})
 
     # ---- 5. the executable family: 144 original cells at BSP settlement ----------------------
     segments = {"all": np.ones(len(bettable), dtype=bool),
@@ -341,8 +344,8 @@ def main() -> int:
          "worse_of_cells_roi_gt_0": sum(1 for c in cells if c["worse_of_roi_c5"] is not None and c["worse_of_roi_c5"] > 0),
          "bsp_roi_c5_by_k_all_segment": {c["rule"]: c["bsp_roi_c5"] for c in cells if c["segment"] == "all"},
          "ltp_roi_c5_by_k_all_segment": {c["rule"]: c["ltp_roi_c5"] for c in cells if c["segment"] == "all"},
-         "cells": [{kk: c[kk] for kk in ("rule", "segment", "bets", "ltp_roi_c5", "ltp_se_cl_date", "ltp_halves", "bsp_bets", "bsp_roi_c5",
-                                        "bsp_se_cl_date", "bsp_halves", "worse_of_roi_c5", "bsp_positive", "bsp_bh_pass_q05")} for c in cells]})
+         "cells": [{kk: c.get(kk) for kk in ("rule", "segment", "bets", "ltp_roi_c5", "ltp_se_cl_date", "ltp_halves", "bsp_bets", "bsp_roi_c5",
+                                            "bsp_se_cl_date", "bsp_halves", "worse_of_roi_c5", "bsp_positive", "bsp_bh_pass_q05")} for c in cells]})
 
     # ---- 6. tuning: develop on one half at ltp_pre, test the other half at BSP ---------------
     checks = []
@@ -393,15 +396,21 @@ def main() -> int:
 
     # ---- 8. corrected estimate ------------------------------------------------------------------
     sp = basic(rb5)
+    touched = hb[hb["ratio"] >= 1.0]
+    rt = w2p.returns(touched["ltp_pl"], touched["placed"], touched["dh"], 0.05)
     out({"section": "8_corrected_estimate",
-         "paper_at_ltp_pre": {"roi_c5": rep["roi"], "se_per_bet": rep["se_per_bet"], "se_cl_date": rep["se_cl_date"]},
+         "paper_at_ltp_pre": {"bets": rep["bets"], "roi_c5": rep["roi"], "se_per_bet": rep["se_per_bet"], "se_cl_date": rep["se_cl_date"],
+                              "halves": rep["halves_roi"], "halves_se_cl_date": rep["halves_se_cl_date"]},
          "executable_sp_bet_decide_ltp_settle_bsp": {"bets": sp["bets"], "roi_c5": sp["roi"], "se_per_bet": sp["se"],
                                                      "se_cl_date": r4(cluster_se(rb5, hb["date"].to_numpy())),
+                                                     "roi_c0": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.0).mean()),
                                                      "roi_c6": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.06).mean()),
                                                      "roi_c8": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.08).mean()),
                                                      "roi_c10": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.10).mean()),
-                                                     "halves": rep_b["halves_roi"]},
-         "limit_order_fill_if_touched": {"fill_rate": rows and None},
+                                                     "halves": rep_b["halves_roi"], "halves_se_cl_date": rep_b["halves_se_cl_date"]},
+         "limit_order_at_ltp_filled_iff_touched_(bsp>=ltp)": {"fill_rate": r4(len(touched) / len(hb)), **basic(rt),
+                                                              "se_cl_date": r4(cluster_se(rt, touched["date"].to_numpy())) if len(touched) > 1 else None},
+         "worse_of_ltp_and_bsp": {**basic(rw), "se_cl_date": r4(cluster_se(rw, hb["date"].to_numpy()))},
          "runtime_s": round(time.time() - t0, 1)})
     return 0
 
