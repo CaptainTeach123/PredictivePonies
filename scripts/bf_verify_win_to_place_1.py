@@ -164,6 +164,8 @@ def main() -> int:
     j["has_bsp"] = j["bsp_pl"].notna() & (j["bsp_pl"] > 1)
     labels = w2p.band_labels(w2p.PLACE_BANDS)
     j["band_pl"] = pd.cut(j["ltp_pl"], w2p.PLACE_BANDS, right=False, labels=labels).astype(str)
+    # share of the race's runners (ALL runners, priced or not) that ever traded in the place market
+    j["race_priced_share"] = grp["ltp_pl"].transform(lambda s: (s.notna() & (s > 1)).mean())
 
     bettable = j[j["ltp_pl"].notna() & (j["ltp_pl"] > 1)].copy()
     edge = (bettable["ltp_pl"] * bettable["p_cal"] - 1)
@@ -245,9 +247,8 @@ def main() -> int:
                      "filled_strike": c.get("strike"), "filled_mean_p_cal": r4(filled["p_cal"].mean()) if len(filled) else None})
     worse = np.minimum(hb["ltp_pl"], hb["bsp_pl"])
     rw = w2p.returns(worse, hb["placed"], hb["dh"], 0.05)
-    # filled at ltp if touched, else fall back to an SP bet
-    fb_price = np.where(hb["ratio"] >= 1.0, hb["ltp_pl"], hb["bsp_pl"])
-    rfb = w2p.returns(fb_price, hb["placed"], hb["dh"], 0.05)
+    # "limit at ltp_pre, filled iff the market later touches it (BSP >= ltp), else take SP" is by
+    # construction the same price as min(ltp, BSP), so one number covers both.
     out({"section": "3_execution_models_bsp_subset", "bets_with_bsp": int(len(hb)),
          "share_ltp_pre_above_bsp_selected": r4((hb["ratio"] < 1).mean()),
          "share_ltp_pre_above_bsp_all_priced_runners": r4((bettable.loc[bettable["has_bsp"], "bsp_pl"] < bettable.loc[bettable["has_bsp"], "ltp_pl"]).mean()),
@@ -256,8 +257,8 @@ def main() -> int:
          "median_win_bsp_over_ltp_selected": r4((hb["bsp_win"] / hb["ltp_win"]).median()),
          "one_tick_worse_is_only_pct": r4(1 - (w2p.one_tick_worse(hb["ltp_pl"]) / hb["ltp_pl"]).median()),
          "limit_order_fill_models": rows,
-         "market_order_worse_of_ltp_and_bsp": {**basic(rw), "se_cl_date": r4(cluster_se(rw, hb["date"].to_numpy()))},
-         "limit_if_touched_else_sp": {**basic(rfb), "se_cl_date": r4(cluster_se(rfb, hb["date"].to_numpy()))},
+         "worse_of_ltp_and_bsp_(= limit at ltp if touched else SP)": {**basic(rw), "se_cl_date": r4(cluster_se(rw, hb["date"].to_numpy())),
+                                                                       "commission_table": comm_table(hb.assign(_w=worse), "_w")},
          "sp_bet": {**basic(rb5), "se_cl_date": r4(cluster_se(rb5, hb["date"].to_numpy())), "commission_table": comm_table(hb, "bsp_pl")}})
 
     # ---- 4. liquidity: markets with no place BSP (no SP could be formed) ----------------------
@@ -268,7 +269,7 @@ def main() -> int:
         c = cell(g, mid) if len(g) > 1 else {"bets": int(len(g))}
         rows[name] = {"bets": c.get("bets"), "roi_c5_at_ltp": c.get("roi"), "se_cl_date": c.get("se_cl_date"), "halves": c.get("halves_roi"),
                       "share_of_selected_bets": r4(len(g) / len(sel)),
-                      "share_of_place_runners_in_race_ever_traded": r4((g.groupby("race")["ltp_pl"].transform(lambda s: (s.notna() & (s > 1)).mean())).mean()) if len(g) else None}
+                      "mean_share_of_race_runners_ever_traded_in_place": r4(g["race_priced_share"].mean()) if len(g) else None}
     # staleness gradient: edge buckets
     hb_all = bettable[bettable["has_bsp"]]
     eb = pd.cut(hb_all["edge"], [-10, -0.1, 0.0, 0.05, 0.1, 0.2, 0.4, 10])

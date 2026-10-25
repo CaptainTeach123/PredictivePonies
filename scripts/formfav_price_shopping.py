@@ -56,6 +56,32 @@ def book_quotes(prices: dict | None, start, minutes_before: float = 0.0) -> dict
     return out
 
 
+def book_sp(prices: dict | None) -> dict:
+    """runner number -> {bookmaker: its own settled starting price} where published."""
+    out = {}
+    for r in (prices or {}).get("runners", []):
+        d = {q.get("bookmaker") or "?": float(q["startingPrice"]) for q in r.get("prices", [])
+             if q.get("marketType", "fixed") == "fixed" and isinstance(q.get("startingPrice"), (int, float)) and q["startingPrice"] > 1}
+        if d:
+            out[r.get("number")] = d
+    return out
+
+
+def book_moves(prices: dict | None, start, minutes: float = 120.0) -> dict:
+    """runner number -> {bookmaker: number of recorded price changes in the last ``minutes``}."""
+    out = {}
+    lo = start - pd.Timedelta(minutes=minutes)
+    for r in (prices or {}).get("runners", []):
+        d = {}
+        for q in r.get("prices", []):
+            if q.get("marketType", "fixed") != "fixed":
+                continue
+            d[q.get("bookmaker") or "?"] = sum(1 for m in (q.get("movements") or [])
+                                              if (t := _when(m.get("at"))) is not None and lo <= t < start)
+        out[r.get("number")] = d
+    return out
+
+
 def shin(prices: list[float]) -> np.ndarray:
     return odds.shin_probabilities(np.asarray(prices, dtype=float))
 
@@ -83,6 +109,7 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         if any(r["number"] not in jump for r in runners):
             continue  # need a price for every runner to de-margin the field
         early = {m: book_quotes(prices, start, m) for m in EARLY}
+        sps, moves = book_sp(prices), book_moves(prices, start)
         # [A-57] a price that was also there 5 minutes earlier (not a fleeting or glitchy quote)
         persist = {m: book_quotes(prices, start, m + 5) for m in (0,) + EARLY}
         median = [float(np.median(list(jump[r["number"]].values()))) for r in runners]
@@ -112,13 +139,16 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
                    "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
                    "sum_inv_best": sum(1 / b for b in best)}
             row["books_0"] = dict(jump[n_])
+            row["sp_books"] = sps.get(n_, {})
+            row["moves_books"] = moves.get(n_, {})
             row["own_fair_0"] = {b: float(v[i]) for b, v in own.items()}
             row["own_fair_30"] = {b: float(v[i]) for b, v in own30.items()}
             for m in (0,) + EARLY:
                 now = jump[n_] if m == 0 else early[m].get(n_, {})
                 before = persist[m].get(n_, {})
-                held = [min(now[b], before[b]) for b in now if b in before]
-                row[f"best_persist_{m}"] = max(held) if held else math.nan
+                held = {b: min(now[b], before[b]) for b in now if b in before}
+                row[f"held_books_{m}"] = held
+                row[f"best_persist_{m}"] = max(held.values()) if held else math.nan
             for m in EARLY:
                 q = early[m].get(n_)
                 row[f"best_{m}"] = max(q.values()) if q else math.nan
@@ -269,6 +299,53 @@ def main() -> int:
                               "sharpest": sharp, "k": k, **summary(ret),
                               "strike": round(float(g["won"].mean()), 4) if len(g) else None,
                               "ev_implied_by_sharpest": round(float((g["best_persist_0"] * ps[m] - 1).mean()), 4) if len(g) else None}))
+    # 2b-5. execution checks [A-62]: feed granularity per bookmaker, and the selected bets settled at the
+    # outlier bookmaker's OWN starting price (the analogue of settling exchange bets at BSP)
+    gran = {}
+    for b in allb.index:
+        mv = df["moves_books"].map(lambda d_, b=b: d_.get(b, math.nan)).dropna()
+        sp_share = df["sp_books"].map(lambda d_, b=b: b in d_).mean()
+        gran[b] = {"quotes": int(len(mv)), "median_changes_last_120min": float(mv.median()) if len(mv) else None,
+                   "share_with_no_change_last_120min": round(float((mv == 0).mean()), 3) if len(mv) else None,
+                   "share_with_own_starting_price": round(float(sp_share), 3)}
+    print(json.dumps({"test": "bookmaker_feed_granularity", "books": gran}))
+
+    def sp_settled(mask, label):
+        g = df[mask].copy()
+        if g.empty:
+            return
+        g["b"] = [max(h, key=h.get) if h else None for h in g["held_books_0"]]
+        g["px"] = [h.get(b, math.nan) for h, b in zip(g["held_books_0"], g["b"])]
+        g["sp"] = [spb.get(b, math.nan) for spb, b in zip(g["sp_books"], g["b"])]
+        h = g[g["sp"].notna() & g["px"].notna()]
+        if len(h) < 10:
+            print(json.dumps({"test": "settled_at_own_sp", "rule": label, "bets_with_sp": int(len(h))}))
+            return
+        at_px = np.where(h["won"] == 1, h["px"] - 1, -1.0)
+        at_sp = np.where(h["won"] == 1, h["sp"] - 1, -1.0)
+        hv = [(h["date"] < mid).to_numpy(), (h["date"] >= mid).to_numpy()]
+        print(json.dumps({"test": "settled_at_own_sp", "rule": label, "bets_with_sp": int(len(h)), "share_with_sp": round(len(h) / len(g), 3),
+                          "roi_at_price_taken": summary(at_px), "roi_at_own_sp": summary(at_sp),
+                          "halves_roi_at_own_sp": [round(float(at_sp[m].mean()), 4) if m.sum() else None for m in hv],
+                          "median_sp_over_price": round(float((h["sp"] / h["px"]).median()), 4),
+                          "share_sp_below_price": round(float((h["sp"] < h["px"]).mean()), 3)}))
+    guarded = (df["best_persist_0"] * df["fair_median"] > 1).fillna(False) & (df["best"] / df["median"] <= 1.5).fillna(False)
+    sp_settled(guarded, "value_held_5min_capped_at_jump_k0")
+    sp_settled(guarded & (df["best_persist_0"] * df["fair_median"] > 1.1).fillna(False), "value_held_5min_capped_at_jump_k0.1")
+    for b in allb.index[:6]:
+        top = df["held_books_0"].map(lambda h, b=b: bool(h) and max(h, key=h.get) == b)
+        sp_settled(top, f"{b}_top_held_price_any")
+        sp_settled(top & guarded, f"{b}_top_held_price_and_value")
+    # 2b-6. bookmaker profiles per code/country, and the same with a 15-minute hold [A-62]
+    for grp, g in df.groupby("group"):
+        for b in allb.index:
+            top = (df["group"] == grp) & df["held_books_0"].map(lambda h, b=b: bool(h) and max(h, key=h.get) == b)
+            if top.sum() < 300:
+                continue
+            print(json.dumps({"test": "bookmaker_top_held_price_by_group", "group": grp, "bookmaker": b,
+                              **cell(df, top, "best_persist_0", mid),
+                              "and_value_vs_consensus": cell(df, top & guarded, "best_persist_0", mid)}))
+    held15 = book_quotes  # noqa: F841 (documented below)
     # 2b'. the same, per code and country (soft markets differ) [A-58]
     for grp, g in df.groupby("group"):
         if g["race_id"].nunique() < 50:
