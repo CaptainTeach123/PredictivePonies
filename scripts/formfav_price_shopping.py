@@ -90,8 +90,11 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         fair_median = shin(median)
         # [A-55] each bookmaker with a full book, de-margined on its own, then averaged
         books = set.intersection(*(set(jump[r["number"]]) for r in runners))
-        per_book = [shin([jump[r["number"]][b] for r in runners]) for b in books]
+        own = {b: shin([jump[r["number"]][b] for r in runners]) for b in books}  # each book de-margined alone
+        per_book = list(own.values())
         fair_books = np.mean(per_book, axis=0) if per_book else fair_median
+        books30 = set.intersection(*(set(early[30].get(r["number"], {})) for r in runners))
+        own30 = {b: shin([early[30][r["number"]][b] for r in runners]) for b in books30}
         meta = meeting.get("meeting") or {}
         race_id = race_key(meta, card["track"], card["date"], card["raceNumber"])
         fair_early = {}
@@ -109,6 +112,8 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
                    "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
                    "sum_inv_best": sum(1 / b for b in best)}
             row["books_0"] = dict(jump[n_])
+            row["own_fair_0"] = {b: float(v[i]) for b, v in own.items()}
+            row["own_fair_30"] = {b: float(v[i]) for b, v in own30.items()}
             for m in (0,) + EARLY:
                 now = jump[n_] if m == 0 else early[m].get(n_, {})
                 before = persist[m].get(n_, {})
@@ -199,6 +204,40 @@ def main() -> int:
             print(json.dumps({"test": "value_at_time_of_bet_price_held_5min", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
             m = m & (df[col] / df[f"median_{mins}"] <= 1.5).fillna(False)
             print(json.dumps({"test": "value_at_time_of_bet_held_5min_and_capped", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
+    # 2b-2. who is right about the selected runners: the consensus or the outlier book? [A-59]
+    for mins in (0, 30):
+        col = f"best_persist_{mins}"
+        m = ((df[col] * df[f"fair_{mins}"] > 1) & (df[col] / df[f"median_{mins}"] <= 1.5)).fillna(False)
+        g = df[m].copy()
+        if len(g) < 20:
+            continue
+        g["best_b"] = [max(b, key=b.get) if b else None for b in g[f"books_{mins}"]]
+        g["p_own"] = [o.get(b, math.nan) for o, b in zip(g[f"own_fair_{mins}"], g["best_b"])]
+        h = g[g["p_own"].notna()]
+        ls = lambda p, y: float(np.mean(np.where(y == 1, np.log(np.clip(p, 1e-9, 1)), np.log(np.clip(1 - p, 1e-9, 1)))))
+        print(json.dumps({"test": "consensus_vs_outlier_book_on_selected_bets", "minutes_before": mins, "bets": int(len(g)),
+                          "strike": round(float(g["won"].mean()), 4),
+                          "mean_consensus_prob": round(float(g[f"fair_{mins}"].mean()), 4),
+                          "mean_outlier_book_own_prob": round(float(h["p_own"].mean()), 4) if len(h) else None,
+                          "with_full_book_from_outlier": int(len(h)),
+                          "log_score_consensus": round(ls(h[f"fair_{mins}"].to_numpy(), h["won"].to_numpy()), 4) if len(h) else None,
+                          "log_score_outlier_book": round(ls(h["p_own"].to_numpy(), h["won"].to_numpy()), 4) if len(h) else None,
+                          "ev_implied_by_consensus": round(float((g[col] * g[f"fair_{mins}"] - 1).mean()), 4)}))
+    # 2b-3. bookmaker profiles: coverage, own margin, and returns when it holds the top price [A-59]
+    allb = pd.Series([b for d_ in df["books_0"] for b in d_]).value_counts()
+    for b in allb.index:
+        px = df["books_0"].map(lambda d_, b=b: d_.get(b, math.nan))
+        has = px.notna()
+        sub = df[has]
+        full = sub.groupby("race_id")["race_id"].transform("size") == sub["field"]
+        over = (1 / px[has][full]).groupby(sub[full]["race_id"]).sum()
+        is_best = (df["best_book"] == b)
+        val = is_best & (df["best_persist_0"] * df["fair_median"] > 1).fillna(False) & (df["best"] / df["median"] <= 1.5)
+        print(json.dumps({"test": "bookmaker_profile", "bookmaker": b, "runner_coverage": round(float(has.mean()), 3),
+                          "own_book_pct_median": round(float(over.median()), 4) if len(over) else None,
+                          "every_runner_at_its_price": summary(np.where(sub["won"] == 1, px[has] - 1, -1.0)),
+                          "when_top_price": cell(df, is_best, "best", mid),
+                          "when_top_price_and_value_vs_consensus": cell(df, val, "best", mid)}))
     # 2b'. the same, per code and country (soft markets differ) [A-58]
     for grp, g in df.groupby("group"):
         if g["race_id"].nunique() < 50:
