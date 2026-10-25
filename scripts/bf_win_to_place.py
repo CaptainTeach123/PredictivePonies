@@ -111,6 +111,7 @@ def load(d: Path, frac: float, seed: int) -> pd.DataFrame:
     # require identical runner sets in the two markets
     bad = set(j.loc[j["_merge"] != "both", "win_mid"].dropna()) | set(j.loc[j["_merge"] != "both", "_wm"].dropna())
     j = j[(j["_merge"] == "both") & ~j["win_mid"].isin(bad)].drop(columns=["_merge", "_wm"])
+    j["harness"] = j["harness"].astype(bool)  # the outer merge can leave this as object
     j["n"] = j.groupby("win_mid")["selection_id"].transform("size")
     j = j[j["n"] >= j["n_winners"] + 2]  # a bet needs someone who can miss a place
     j["month"] = j["date"].dt.to_period("M").astype(str)
@@ -266,7 +267,7 @@ def returns(price, won, dh, c):
     return np.where(won, dh * (price - 1) * (1 - c) - (1 - dh), -1.0)
 
 
-def bet_cell(g: pd.DataFrame, mid, price_col="ltp_pl", won_col="placed") -> dict:
+def bet_cell(g: pd.DataFrame, mid, price_col="ltp_pl", won_col="placed", prob_col=None) -> dict:
     res = {"bets": int(len(g))}
     if len(g) < 2:
         return res
@@ -284,6 +285,17 @@ def bet_cell(g: pd.DataFrame, mid, price_col="ltp_pl", won_col="placed") -> dict
     res["bsp_cover"] = r4(has.mean())
     res["roi_c5_settle_bsp"] = summ(returns(g.loc[has, bsp_col], g.loc[has, won_col], g.loc[has, "dh"], 0.05))["roi"]
     res["roi_c5_ltp_same_bsp_subset"] = summ(returns(g.loc[has, price_col], g.loc[has, won_col], g.loc[has, "dh"], 0.05))["roi"]
+    if has.sum() > 1:
+        rb = returns(g.loc[has, bsp_col], g.loc[has, won_col], g.loc[has, "dh"], 0.05)
+        res["bsp_settle_se"] = summ(rb)["se"]
+        res["bsp_settle_halves_c5"] = [summ(rb[(g.loc[has, "date"] < mid).to_numpy()])["roi"], summ(rb[(g.loc[has, "date"] >= mid).to_numpy()])["roi"]]
+        worse = np.minimum(g.loc[has, price_col], g.loc[has, bsp_col])
+        res["roi_c5_worse_of_ltp_and_bsp"] = summ(returns(worse, g.loc[has, won_col], g.loc[has, "dh"], 0.05))["roi"]
+        if prob_col:
+            res["median_prob_x_bsp"] = r4((g.loc[has, prob_col] * g.loc[has, bsp_col]).median())
+            res["median_prob_x_ltp"] = r4((g.loc[has, prob_col] * g.loc[has, price_col]).median())
+        hw = has & g["bsp_win"].notna() & (g["bsp_win"] > 1)
+        res["median_bsp_win_over_ltp_win"] = r4((g.loc[hw, "bsp_win"] / g.loc[hw, "ltp_win"]).median()) if hw.any() else None
     res["median_bsp_over_ltp"] = r4((g.loc[has, bsp_col] / g.loc[has, price_col]).median()) if has.any() else None
     res["strike"] = r4(g[won_col].mean())
     res["mean_price"] = r4(g[price_col].mean())
@@ -319,11 +331,17 @@ def logloss_race(q, y, race):
     return np.bincount(race, weights=ll)
 
 
-def paired(a: np.ndarray, b: np.ndarray) -> dict:
-    """mean per-race log-loss of a and b, and gain (b - a) with SE over races."""
+def paired(a: np.ndarray, b: np.ndarray, first_half=None) -> dict:
+    """mean per-race log-loss of a and b, and gain (b - a) with SE over races
+    (and per half when ``first_half`` is given)."""
     d = b - a
-    return {"ll_model": r4(a.mean()), "ll_market": r4(b.mean()), "gain": r4(d.mean()),
-            "gain_se": r4(d.std(ddof=1) / math.sqrt(len(d))), "races": int(len(d))}
+    res = {"ll_model": r4(a.mean()), "ll_market": r4(b.mean()), "gain": r4(d.mean()),
+           "gain_se": r4(d.std(ddof=1) / math.sqrt(len(d))), "races": int(len(d))}
+    if first_half is not None:
+        res["halves_gain"] = [r4(d[first_half].mean()), r4(d[~first_half].mean())]
+        res["halves_gain_se"] = [r4(d[first_half].std(ddof=1) / math.sqrt(first_half.sum())),
+                                 r4(d[~first_half].std(ddof=1) / math.sqrt((~first_half).sum()))]
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -421,15 +439,16 @@ def main() -> int:
     hc = full["p_cal"].notna().to_numpy()
     ll_cal = logloss_race(np.nan_to_num(full["p_cal"].to_numpy(), nan=0.5), y, rc)
     rc_has = np.bincount(rc, weights=hc) == np.bincount(rc)
+    fh = (full.drop_duplicates("race")["date"] < mid).to_numpy()
     res = {"section": "b_logloss_fully_priced_place_markets", "races": int(len(ll_mkt)),
            "per_race_logloss": {"market": r4(ll_mkt.mean()), "derived": r4(ll_fair.mean())},
-           "derived_vs_market": paired(ll_fair, ll_mkt),
-           "derived_calibrated_vs_market": paired(ll_cal[rc_has], ll_mkt[rc_has])}
+           "derived_vs_market": paired(ll_fair, ll_mkt, fh),
+           "derived_calibrated_vs_market": paired(ll_cal[rc_has], ll_mkt[rc_has], fh[rc_has])}
     cal_blend = {}
     for w in BLEND_GRID:
         q = w * full["q_mkt"].to_numpy() + (1 - w) * np.nan_to_num(full["p_cal"].to_numpy(), nan=0.5)
         cal_blend[round(float(w), 2)] = logloss_race(q, y, rc)
-    res["blend_calibrated_w_market_0.5"] = paired(cal_blend[0.5][rc_has], ll_mkt[rc_has])
+    res["blend_calibrated_w_market_0.5"] = paired(cal_blend[0.5][rc_has], ll_mkt[rc_has], fh[rc_has])
     fm = full.drop_duplicates("race").set_index("race")["month"]
     rmonth = fm.reindex(pd.unique(full["race"])).to_numpy()
     # fixed blends and a walk-forward fitted weight (w on the market)
@@ -438,7 +457,7 @@ def main() -> int:
         q = w * full["q_mkt"].to_numpy() + (1 - w) * full["p_fair"].to_numpy()
         blend_ll[round(float(w), 2)] = logloss_race(q, y, rc)
     for w in (0.25, 0.5, 0.75):
-        res[f"blend_w_market_{w}"] = paired(blend_ll[w], ll_mkt)
+        res[f"blend_w_market_{w}"] = paired(blend_ll[w], ll_mkt, fh)
     msum = {w: pd.Series(v).groupby(rmonth).sum() for w, v in blend_ll.items()}
     mcount = pd.Series(rmonth).value_counts()
     chosen, wf = {}, np.full(len(ll_mkt), np.nan)
@@ -451,11 +470,9 @@ def main() -> int:
         sel = rmonth == m
         wf[sel] = blend_ll[round(float(best), 2)][sel]
     has = ~np.isnan(wf)
-    res["blend_walk_forward"] = {**paired(wf[has], ll_mkt[has]), "weights_on_market_by_month_sample":
+    res["blend_walk_forward"] = {**paired(wf[has], ll_mkt[has], fh[has]), "weights_on_market_by_month_sample":
                                  {m: chosen[m] for m in sorted(chosen)[::6]}}
     res["blend_walk_forward"]["median_weight"] = float(np.median(list(chosen.values()))) if chosen else None
-    res["blend_walk_forward"]["halves_gain"] = [r4((ll_mkt - wf)[has & (full.drop_duplicates("race")["date"] < mid).to_numpy()].mean()),
-                                               r4((ll_mkt - wf)[has & (full.drop_duplicates("race")["date"] >= mid).to_numpy()].mean())]
     # same walk-forward blend on the calibrated derived probabilities
     msum_c = {w: pd.Series(v[rc_has]).groupby(rmonth[rc_has]).sum() for w, v in cal_blend.items()}
     chosen_c, wfc = {}, np.full(len(ll_mkt), np.nan)
@@ -468,12 +485,8 @@ def main() -> int:
         sel = (rmonth == m) & rc_has
         wfc[sel] = cal_blend[round(float(best), 2)][sel]
     hasc = ~np.isnan(wfc)
-    res["blend_calibrated_walk_forward"] = {**paired(wfc[hasc], ll_mkt[hasc]),
-                                            "median_weight_on_market": float(np.median(list(chosen_c.values()))) if chosen_c else None,
-                                            "halves_gain": [r4((ll_mkt - wfc)[hasc & (full.drop_duplicates("race")["date"] < mid).to_numpy()].mean()),
-                                                            r4((ll_mkt - wfc)[hasc & (full.drop_duplicates("race")["date"] >= mid).to_numpy()].mean())]}
-    res["halves_gain_derived"] = [r4((ll_mkt - ll_fair)[(full.drop_duplicates("race")["date"] < mid).to_numpy()].mean()),
-                                  r4((ll_mkt - ll_fair)[(full.drop_duplicates("race")["date"] >= mid).to_numpy()].mean())]
+    res["blend_calibrated_walk_forward"] = {**paired(wfc[hasc], ll_mkt[hasc], fh[hasc]),
+                                            "median_weight_on_market": float(np.median(list(chosen_c.values()))) if chosen_c else None}
     out(res)
 
     # ---- (c) bets: back the place at ltp_pl when ltp_pl * p > 1 + k, p = p_fair or p_cal
@@ -483,11 +496,14 @@ def main() -> int:
                 "gallops": (~bettable["harness"]).to_numpy(), "harness": bettable["harness"].to_numpy(),
                 "fully_priced_only": bettable["all_priced"].to_numpy(),
                 "partially_priced_only": (~bettable["all_priced"]).to_numpy(),
-                "place_t30_present_liquid": bettable["t30_pl"].notna().to_numpy()}
+                "place_t30_present_liquid": bettable["t30_pl"].notna().to_numpy(),
+                "price_1.5_to_15_post_hoc": ((bettable["ltp_pl"] >= 1.5) & (bettable["ltp_pl"] < 15)).to_numpy()}
     ref = bettable[bettable["bsp_pl"].notna() & (bettable["bsp_pl"] > 1)]
     out({"section": "c_reference_all_priced_runners", "runners": int(len(bettable)), "with_place_bsp": int(len(ref)),
          "median_bsp_over_ltp_all": r4((ref["bsp_pl"] / ref["ltp_pl"]).median()),
          "share_bsp_below_ltp_all": r4((ref["bsp_pl"] < ref["ltp_pl"]).mean()),
+         "median_bsp_win_over_ltp_win_all": r4((ref["bsp_win"] / ref["ltp_win"]).median()),
+         "median_p_cal_x_bsp_all": r4((ref["p_cal"] * ref["bsp_pl"]).median()),
          "place_t30_present_share": r4(bettable["t30_pl"].notna().mean()),
          "blind_back_all": bet_cell(bettable, mid)})
     for b in labels:
@@ -499,7 +515,7 @@ def main() -> int:
             sel_k = edge > kk
             for name, mask in segments.items():
                 g = bettable[sel_k & mask]
-                cell = bet_cell(g, mid)
+                cell = bet_cell(g, mid, prob_col=pcol)
                 cell.update({"rule": f"ltp_pl*{pcol}>1+{kk:g}", "prob": pcol, "k": kk, "segment": name, "positive": positive(cell)})
                 cells.append(cell)
                 # opposite-half development check: > 2 SE (c=5%) in the dev half, does the other half hold?
@@ -573,11 +589,9 @@ def main() -> int:
     llw_modc = np.bincount(rc2, weights=-yw * np.log(np.clip(ev["p_model_cal"].to_numpy(), 1e-9, 1)))
     rd = ev.drop_duplicates("race")["date"].to_numpy()
     mres = {"section": "d_mirror_win_model", "races": int(len(llw_mkt)),
-            "model_vs_market": paired(llw_mod, llw_mkt),
-            "halves_gain": [r4((llw_mkt - llw_mod)[rd < mid].mean()), r4((llw_mkt - llw_mod)[rd >= mid].mean())],
+            "model_vs_market": paired(llw_mod, llw_mkt, rd < mid),
             "weights_sample_std_units": weights[::6], "n_refits": len(weights),
-            "model_xcal_vs_market": paired(llw_modc, llw_mkt),
-            "halves_gain_xcal": [r4((llw_mkt - llw_modc)[rd < mid].mean()), r4((llw_mkt - llw_modc)[rd >= mid].mean())],
+            "model_xcal_vs_market": paired(llw_modc, llw_mkt, rd < mid),
             "weights_xcal_sample_std_units": weights_c[::6]}
     ev["edge_m"] = ev["p_model"] * ev["ltp_win"] - 1
     for kk in KS:
