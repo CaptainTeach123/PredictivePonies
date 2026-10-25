@@ -56,3 +56,8 @@ python -m http.server -d docs 8000   # view dashboard at http://localhost:8000
 7. **Dashboard JSON contract:** the fields read by `docs/app.js` are produced in `pipeline.race_cards` and `evaluate.evaluate`. If you rename one, update both sides.
 8. **Browser compatibility:** `ponies/` runs in Pyodide (Python 3.12, numpy 2.0, pandas 2.2; the version is pinned in `docs/predict.js`). Use only numpy, pandas and the standard library, avoid syntax newer than 3.12, and keep `tests/test_browser.py` passing. That test checks browser predictions equal pipeline predictions.
 9. Keep `docs/data/*.json` committed. The Pages workflow regenerates them, but committing them lets the page work locally and on forks.
+
+
+## Research
+
+`RESEARCH.md` ranks betting methodologies by evidence, with sources, and says which the data can test now. `ASSUMPTIONS.md`'s change log records what each test found.
