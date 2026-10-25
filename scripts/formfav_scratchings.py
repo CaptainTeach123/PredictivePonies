@@ -29,7 +29,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import _when, race_key  # noqa: E402
+from ponies.formfav import _when, effective_start, race_key  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from formfav_price_shopping import book_quotes, cell, summary  # noqa: E402
@@ -64,6 +64,7 @@ def main() -> int:
             start = _when(card.get("startTime") or prices.get("startTime"))
             if start is None:
                 continue
+            start, _shift = effective_start(prices, start)  # [A-64]
             races_seen += 1
             placings = {p.get("number"): p for p in res.get("placings", [])}
             by_num = {r.get("number"): r for r in prices.get("runners", [])}

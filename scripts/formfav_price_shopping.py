@@ -97,6 +97,7 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         prices = (meeting.get("prices") or {}).get(str(card["raceNumber"]))
         if not res or not prices or card.get("abandoned"):
             continue
+        meta = meeting.get("meeting") or {}
         start = _when(card.get("startTime") or prices.get("startTime"))
         if start is None:
             continue
@@ -125,7 +126,6 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         fair_books = np.mean(per_book, axis=0) if per_book else fair_median
         books30 = set.intersection(*(set(early[30].get(r["number"], {})) for r in runners))
         own30 = {b: shin([early[30][r["number"]][b] for r in runners]) for b in books30}
-        meta = meeting.get("meeting") or {}
         race_id = race_key(meta, card["track"], card["date"], card["raceNumber"])
         fair_early = {}
         for m in EARLY:  # consensus at T, using only prices known at T
@@ -196,6 +196,10 @@ def main() -> int:
     days = sorted(df["date"].unique())
     mid = days[len(days) // 2]
     races = df.drop_duplicates("race_id")
+    print(json.dumps({"test": "start_time_shifts_by_group", "groups": {
+        g: {"races": len(v), "share_shifted": round(float(np.mean([x > 0 for x in v])), 3),
+            "median_shift_minutes_when_shifted": round(float(np.median([x for x in v if x > 0])), 1) if any(x > 0 for x in v) else None}
+        for g, v in SHIFTS.items()}}))
     print(json.dumps({"races": int(len(races)), "runners": int(len(df)), "days": len(days),
                       "books_per_runner_median": float(df["n_books"].median()),
                       "book_pct": {"median_price": round(float((1 / df["median"]).groupby(df["race_id"]).sum().median()), 4),

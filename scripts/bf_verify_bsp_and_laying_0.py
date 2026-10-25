@@ -244,7 +244,8 @@ def main() -> int:
     has = g["has_t30"].to_numpy()
     same = has & (g["ltp_t30"].round(2).to_numpy() == lpr)
     liq = g.groupby("market_id")["has_t30"].transform("mean").to_numpy()
-    venue = g["venue"].fillna("").str.lower()
+    vmap = pd.read_parquet(a.path, columns=["market_id", "venue"]).drop_duplicates("market_id").set_index("market_id")["venue"]
+    venue = g["market_id"].map(vmap).fillna("").str.lower()
     metro = venue.apply(lambda v: any(m in v for m in METRO)).to_numpy()
     rank = g.groupby("market_id").cumcount().to_numpy() + 1  # df sorted by ltp_pre within market in load()
     fs = g["field_size"].to_numpy()
