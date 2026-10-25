@@ -323,6 +323,40 @@ def main() -> int:
         "[4.5,6.0), ltp_pre!=ltp_t30 (has t30)": compact(paired(g, np.flatnonzero(has & ~same & (lp >= 4.5) & (lp < 6.0)))),
         "[4.5,6.0), no t30": compact(paired(g, np.flatnonzero(~has & (lp >= 4.5) & (lp < 6.0))))}})
 
+    # ---- 3c. clean-reference subsets: fresh print (runner traded 30 min out) AND no stale-scratching market
+    # (ltp book in [0.98,1.03]) AND, where stated, not the ladder-step tick 6.0. CONDITIONAL on t30 trading.
+    book_ok = (lb >= 0.98) & (lb <= 1.03)
+    lo_side_m, hi_side_m = (lp >= 4.5) & (lp < 6.0), (lp >= 6.0) & (lp < 6.5)
+    clean = {
+        "band, book ok, has_t30": band & book_ok & has,
+        "band, book ok, has_t30, print changed since t30": band & book_ok & has & ~same,
+        "band, book ok, has_t30, minus tick 6.0": band & book_ok & has & (lpr != 6.0),
+        "band, book ok, has_t30, print changed, minus tick 6.0": band & book_ok & has & ~same & (lpr != 6.0),
+        "band, book ok, NO t30": band & book_ok & ~has,
+        "[4.5,6.0), book ok, has_t30": lo_side_m & book_ok & has,
+        "[4.5,6.0), book ok, NO t30": lo_side_m & book_ok & ~has,
+        "[6.0,6.5), book ok, has_t30": hi_side_m & book_ok & has,
+        "[6.0,6.5), book ok, NO t30": hi_side_m & book_ok & ~has,
+        "tick 6.0, book ok, has_t30": (lpr == 6.0) & book_ok & has,
+        "ticks 6.2-6.4, book ok, has_t30": (lpr > 6.0) & (lpr < 6.5) & book_ok & has,
+        "band, book ok, metro": band & book_ok & metro,
+        "band, book ok, metro, has_t30": band & book_ok & metro & has,
+        "band, book ok, non-metro, has_t30": band & book_ok & ~metro & has,
+        "band, book ok, market t30 share >= 0.5, has_t30": band & book_ok & (liq >= 0.5) & has,
+        "band, book ok, field 12+, has_t30": band & book_ok & (fs >= 12) & has,
+        "band, book ok, field 12+, NO t30": band & book_ok & (fs >= 12) & ~has,
+    }
+    out({"section": "3c_clean_reference_subsets", "columns": "compact (see 1_by_year)", "band_share_has_t30": r4(has[band].mean()),
+         "band_share_book_ok": r4(book_ok[band].mean()),
+         "has_t30_share_by_year": {str(y): r4(has[band & (years == y)].mean()) for y in sorted(np.unique(years))},
+         "rows": {k: compact(paired(g, np.flatnonzero(m))) for k, m in clean.items()}})
+    # mean log(bsp/ltp) for all runners by staleness proxy: is the SP drift itself concentrated in stale prints?
+    out({"section": "3d_mean_log_ratio_all_runners_by_proxy", "rows": {
+        k: {"n": int(m.sum()), "mean_log_ratio_all": r4(np.log(g["bsp"].to_numpy()[m] / lp[m]).mean()),
+            "mean_log_ratio_winners": r4(np.log(g["bsp"].to_numpy()[m & g["won_b"].to_numpy()] / lp[m & g["won_b"].to_numpy()]).mean())}
+        for k, m in {"band has_t30": band & has, "band no t30": band & ~has, "band has_t30 & book ok": band & has & book_ok,
+                     "band no t30 & book ok": band & ~has & book_ok}.items()}})
+
     # ---- 4. survivorship: markets the original dropped
     cols = ["market_id", "market_name", "date", "selection_id", "ltp_pre", "bsp", "won", "market_type", "dead_heat_share"]
     w = pd.read_parquet(a.path, columns=cols).drop_duplicates(["market_id", "selection_id"])

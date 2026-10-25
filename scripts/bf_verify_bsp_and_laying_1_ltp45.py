@@ -462,6 +462,46 @@ def main() -> int:
     out({"section": "8_external_replication_ltp_4.5_6.5_c5", "cells": repl,
          "note": "same band, same filters, other jurisdictions; the original ran AU only"})
 
+    # ---- 10. interactions: sub-band x early liquidity, here and in GB / IE ------------------------------
+    def inter(frame, label):
+        lpx = frame["ltp_pre"].to_numpy()
+        hasx = frame["has_t30"].to_numpy()
+        res = {}
+        for sb, (lo, hi) in {"[4.5,6)": (4.5, 6.0), "[6,6.5)": (6.0, 6.5), "[4.5,6.5)": (4.5, 6.5)}.items():
+            m = (lpx >= lo) & (lpx < hi)
+            res[sb] = {}
+            for liq, mask in {"traded_t30": m & hasx, "not_traded_t30": m & ~hasx, "all": m}.items():
+                s = frame[mask]
+                if len(s) < 50:
+                    res[sb][liq] = {"bets": int(len(s))}
+                    continue
+                b = sub_cell(s)
+                rt = s["bsp"].to_numpy() / s["ltp_pre"].to_numpy()
+                b["share"] = r4(len(s) / m.sum())
+                b["ratio_q10_q50_q90"] = [r4(v) for v in np.quantile(rt, [0.1, 0.5, 0.9])]
+                b["mean_log_ratio"] = r4(np.log(rt).mean())
+                b["strike"] = r4(s["won_b"].mean())
+                b["implied_ltp"] = r4((1.0 / s["ltp_pre"]).mean())
+                b["implied_bsp"] = r4((1.0 / s["bsp"]).mean())
+                b["book_ltp_median"] = r4(s["book"].median())
+                b["book_bsp_median"] = r4(s["book_bsp"].median())
+                b["median_field"] = int(s["field_size"].median())
+                res[sb][liq] = b
+        return res
+
+    inter_res = {"AU gallops": inter(df[df["bsp_ok"]], "AU")}
+    inter_res["AU gallops 12+ fields"] = inter(df[df["bsp_ok"] & (df["field_size"] >= 12)], "AU12")
+    inter_res["AU gallops book_ltp 0.98-1.03"] = inter(df[df["bsp_ok"] & (df["book"] >= 0.98) & (df["book"] <= 1.03)], "AUclean")
+    for code, path in (("GB gallops", SPLIT / "gb_win.parquet"), ("IE gallops", SPLIT / "ie_win.parquet")):
+        if path.exists():
+            d2, _, _ = load(path, a.end, gallops=True)
+            inter_res[code] = inter(d2[d2["bsp_ok"]], code)
+            inter_res[code + " t30 coverage"] = r4(d2["has_t30"].mean())
+            del d2
+    inter_res["AU t30 coverage"] = r4(df["has_t30"].mean())
+    out({"section": "10_interactions_subband_x_early_liquidity_c5", **inter_res,
+         "note": "has_t30 = the runner had a traded price 30 min before the start (a liquidity marker, 1-minute snapshots)"})
+
     # ---- 9. multiple testing summary -----------------------------------------------------------------
     z_cl = m5 / cl["se_cl_date"]
     p_cl = one_sided_p(z_cl)
