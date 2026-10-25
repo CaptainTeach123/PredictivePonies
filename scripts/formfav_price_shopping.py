@@ -83,6 +83,8 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         if any(r["number"] not in jump for r in runners):
             continue  # need a price for every runner to de-margin the field
         early = {m: book_quotes(prices, start, m) for m in EARLY}
+        # [A-57] a price that was also there 5 minutes earlier (not a fleeting or glitchy quote)
+        persist = {m: book_quotes(prices, start, m + 5) for m in (0,) + EARLY}
         median = [float(np.median(list(jump[r["number"]].values()))) for r in runners]
         best = [max(jump[r["number"]].values()) for r in runners]
         fair_median = shin(median)
@@ -105,6 +107,11 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
                    "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
                    "sum_inv_best": sum(1 / b for b in best)}
             row["books_0"] = dict(jump[n_])
+            for m in (0,) + EARLY:
+                now = jump[n_] if m == 0 else early[m].get(n_, {})
+                before = persist[m].get(n_, {})
+                held = [min(now[b], before[b]) for b in now if b in before]
+                row[f"best_persist_{m}"] = max(held) if held else math.nan
             for m in EARLY:
                 q = early[m].get(n_)
                 row[f"best_{m}"] = max(q.values()) if q else math.nan
@@ -170,11 +177,26 @@ def main() -> int:
             print(json.dumps({"test": "early_best_vs_fair_at_jump", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
         print(json.dumps({"test": "early_best_all_runners", "minutes_before": mins, **cell(df, have, col, mid)}))
     # 2b. BETTABLE: value by the consensus known at the time of the bet [A-56]
-    for mins in EARLY:
+    df["best_0"], df["median_0"], df["fair_0"] = df["best"], df["median"], df["fair_median"]
+    for mins in (0,) + EARLY:
         for k in (0.0, 0.05, 0.1, 0.2):
-            m = (df[f"best_{mins}"] * df[f"fair_{mins}"] > 1 + k)
+            m = (df[f"best_{mins}"] * df[f"fair_{mins}"] > 1 + k).fillna(False)
+            g = df[m]
             print(json.dumps({"test": "value_at_time_of_bet", "minutes_before": mins, "k": k,
-                              **cell(df, m.fillna(False), f"best_{mins}", mid)}))
+                              **cell(df, m, f"best_{mins}", mid),
+                              "median_price_taken": round(float(g[f"best_{mins}"].median()), 2) if len(g) else None,
+                              "ev_implied_by_consensus": round(float((g[f"best_{mins}"] * g[f"fair_{mins}"] - 1).mean()), 4) if len(g) else None,
+                              "best_over_median_quartiles": [round(float(x), 3) for x in (g[f"best_{mins}"] / g[f"median_{mins}"]).quantile([.25, .5, .75])] if len(g) else None}))
+        # glitch cap: ignore quotes more than 50% above the median, and require the quote to have held 5 minutes [A-57]
+        for k in (0.0, 0.1):
+            capped = (df[f"best_{mins}"] / df[f"median_{mins}"] <= 1.5)
+            m = (df[f"best_{mins}"] * df[f"fair_{mins}"] > 1 + k).fillna(False) & capped.fillna(False)
+            print(json.dumps({"test": "value_at_time_of_bet_capped_1.5", "minutes_before": mins, "k": k, **cell(df, m, f"best_{mins}", mid)}))
+            col = f"best_persist_{mins}"
+            m = (df[col] * df[f"fair_{mins}"] > 1 + k).fillna(False)
+            print(json.dumps({"test": "value_at_time_of_bet_price_held_5min", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
+            m = m & (df[col] / df[f"median_{mins}"] <= 1.5).fillna(False)
+            print(json.dumps({"test": "value_at_time_of_bet_held_5min_and_capped", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
     # 2c. BETTABLE: momentum - firmed between 120 and 30 minutes out, bet at the best price 30 minutes out
     ratio = df["median_30"] / df["median_120"]
     for mm in (0.05, 0.1, 0.2):
