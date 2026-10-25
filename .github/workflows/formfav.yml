@@ -93,6 +93,7 @@ jobs:
           python scripts/formfav_bets.py
           python scripts/formfav_rank_bets.py
           python scripts/formfav_price_shopping.py
+          python scripts/formfav_scratchings.py
 
       - name: Save store
         if: always() && (github.event_name == 'schedule' || inputs.mode == 'collect' || inputs.mode == 'train')
