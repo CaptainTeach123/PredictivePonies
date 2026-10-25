@@ -1,12 +1,17 @@
 """Adversarial verification #1 of experiment "win_to_place" (scripts/bf_win_to_place.py),
 lens: STATISTICS AND EXECUTION.
 
-CLAIM under test: back the PLACE at ltp_pre when ltp_pre * p_cal > 1.10 (p_cal =
-calibrated discounted-Harville place probability from the WIN market's ltp_pre):
-+10.8% ROI after 5% commission on 107,224 bets (SE 1.2%), > 2 SE in both halves,
-"paper-only" because the same bets settled at the place BSP return -4.6%.
+CLAIMS under test (``--k`` picks the one): back the PLACE at ltp_pre when
+ltp_pre * p_cal > 1 + k (p_cal = calibrated discounted-Harville place probability
+from the WIN market's ltp_pre).
+  k=0.1: +10.8% ROI after 5% commission on 107,224 bets (SE 1.2%), halves > 2 SE;
+         the same bets settled at the place BSP return -4.6%.
+  k=0.2: +17.9% ROI after 5% commission on 48,075 bets (SE 2.5%), halves
+         [18.9%, 17.2%], c0 +23.0%, c8 +14.9%, one tick worse +15.0%; settled at
+         the place BSP -5.9% (SE 2.8%, halves [-0.4%, -9.4%]).
+Both are presented as "paper-only" (ltp_pre is a stale last-traded price).
 
-    python scripts/bf_verify_win_to_place_1.py [--dir data/raw/betfair/split] [--frac 0.1]
+    python scripts/bf_verify_win_to_place_1.py [--dir data/raw/betfair/split] [--frac 0.1] [--k 0.2]
 
 The original pipeline is imported unchanged (same join, lambda fit, calibration),
 so the headline cell is reproduced exactly; the script then adds what the
@@ -28,7 +33,12 @@ original did not run:
      re-evaluated at BSP settlement (positive criterion, BH q=0.05);
   7. tuning: pick the best cell on one half at ltp_pre, test the other half at
      BSP; k grid and p choice at BSP;
-  8. heavy tails: ROI/SE excluding 15+ prices, winsorised returns, bootstrap SE.
+  8. heavy tails: ROI/SE excluding 15+ prices, winsorised returns, bootstrap SE;
+  9. staleness / feasibility / winner's curse on the selected bets: no trade in
+     the last 30 min (ltp_t30 == ltp_pre, conditional on t30 present), the race's
+     ltp place book vs n_winners (an under-round book is a set of prices that
+     could not all have been available at once), mean p_cal vs strike vs 1/BSP,
+     and the k-gradient (ROI at ltp vs at BSP for k = 0, 0.05, 0.1, 0.2).
 Prints summary numbers only (never horse names or rows).
 """
 
@@ -51,7 +61,6 @@ _spec = importlib.util.spec_from_file_location("w2p", ROOT / "scripts" / "bf_win
 w2p = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w2p)
 
-K = 0.1
 COMMS5 = [0.0, 0.05, 0.06, 0.08, 0.10]
 FILL_THRESHOLDS = [1.0, 0.98, 0.95, 0.9, 0.8]
 N_BOOT = 1000
@@ -139,7 +148,9 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=Path("data/raw/betfair/split"))
     ap.add_argument("--frac", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--k", type=float, default=0.1, help="edge threshold of the claim under test (0.1 or 0.2)")
     a = ap.parse_args()
+    K = a.k
     t0 = time.time()
 
     # ---- identical pipeline to the original main() up to p_cal -----------------------------
@@ -184,7 +195,7 @@ def main() -> int:
     # ---- 1. reproduction + clustered SEs ------------------------------------------------------
     rep = cell(sel, mid)
     rep_b = cell(hb, mid, price_col="bsp_pl")
-    out({"section": "1_reproduction_and_clustered_se_k0.1_p_cal",
+    out({"section": f"1_reproduction_and_clustered_se_k{K:g}_p_cal", "k": K,
          "at_ltp_pre": {**rep, "bets_per_race": r4(len(sel) / sel["race"].nunique()), "bets_per_day": r4(len(sel) / sel["date"].nunique()),
                         "commission_table": comm_table(sel, "ltp_pl"), "iid_bootstrap_se": iid_boot_se(r5),
                         "month_block_bootstrap": block_boot_se(r5, sel["month"].to_numpy())},
@@ -394,11 +405,63 @@ def main() -> int:
          "per_bet_se": r4(r0.std(ddof=1) / math.sqrt(len(r0))), "iid_bootstrap_se": iid_boot_se(r0),
          "roi_c5_at_bsp_excluding_15plus_ltp": basic(w2p.returns(hb.loc[hb["ltp_pl"] < 15, "bsp_pl"], hb.loc[hb["ltp_pl"] < 15, "placed"], hb.loc[hb["ltp_pl"] < 15, "dh"], 0.05))})
 
+    # ---- 9. staleness / feasibility / winner's curse on the selected bets --------------------
+    has_t30 = (sel["t30_pl"].notna() & (sel["t30_pl"] > 1)).to_numpy()
+    same = has_t30 & np.isclose(sel["t30_pl"].to_numpy(dtype=float), sel["ltp_pl"].to_numpy(dtype=float))
+    t30rows = {}
+    for name, m in {"t30_present_and_unchanged_(no_trade_last_30min)": same, "t30_present_and_traded_since": has_t30 & ~same}.items():
+        g = sel[m]
+        gb = g[g["has_bsp"]]
+        t30rows[name] = {"bets": int(len(g)), "share_of_selected_with_t30": r4(m.sum() / max(has_t30.sum(), 1)),
+                         "roi_c5_at_ltp": r4(w2p.returns(g["ltp_pl"], g["placed"], g["dh"], 0.05).mean()) if len(g) > 1 else None,
+                         "roi_c5_at_bsp": r4(w2p.returns(gb["bsp_pl"], gb["placed"], gb["dh"], 0.05).mean()) if len(gb) > 1 else None,
+                         "median_place_bsp_over_ltp": r4((gb["bsp_pl"] / gb["ltp_pl"]).median()) if len(gb) else None}
+    # race-level ltp place book (fully priced races only): sum(1/ltp_pl) / n_winners
+    book = (1 / j["ltp_pl"]).groupby(j["race"]).transform("sum") / j["n_winners"]
+    sel["book_over_nw"] = book.reindex(sel.index).where(sel["all_priced"])
+    bb = pd.cut(sel["book_over_nw"], [0, 0.9, 0.95, 1.0, 1.05, 10])
+    brows = []
+    for b, g in sel[sel["all_priced"]].groupby(bb, observed=True):
+        gb = g[g["has_bsp"]]
+        r = w2p.returns(g["ltp_pl"], g["placed"], g["dh"], 0.05)
+        brows.append({"ltp_book_over_n_winners": str(b), "bets": int(len(g)), "share_of_fully_priced_selected": r4(len(g) / sel["all_priced"].sum()),
+                      "roi_c5_at_ltp": r4(r.mean()), "se_cl_date": r4(cluster_se(r, g["date"].to_numpy())),
+                      "roi_c5_at_bsp": r4(w2p.returns(gb["bsp_pl"], gb["placed"], gb["dh"], 0.05).mean()) if len(gb) > 1 else None,
+                      "median_place_bsp_over_ltp": r4((gb["bsp_pl"] / gb["ltp_pl"]).median()) if len(gb) else None})
+    all_book = book[j["all_priced"]].groupby(j.loc[j["all_priced"], "race"]).first()
+    # winner's curse: the model's probability on the bets it picks vs what happened
+    wc = {"bets": int(len(sel)), "mean_p_cal": r4(sel["p_cal"].mean()), "strike": r4(sel["placed"].mean()),
+          "mean_1_over_ltp": r4((1 / sel["ltp_pl"]).mean()), "strike_over_p_cal": r4(sel["placed"].mean() / sel["p_cal"].mean()),
+          "bsp_subset": {"bets": int(len(hb)), "mean_p_cal": r4(hb["p_cal"].mean()), "strike": r4(hb["placed"].mean()),
+                         "mean_1_over_ltp": r4((1 / hb["ltp_pl"]).mean()), "mean_1_over_bsp": r4((1 / hb["bsp_pl"]).mean()),
+                         "median_p_cal_x_ltp": r4((hb["p_cal"] * hb["ltp_pl"]).median()), "median_p_cal_x_bsp": r4((hb["p_cal"] * hb["bsp_pl"]).median())}}
+    wcb = []
+    for b in labels:
+        g = hb[hb["band_pl"] == b]
+        if len(g) < 50:
+            continue
+        wcb.append({"ltp_band": b, "bets": int(len(g)), "mean_p_cal": r4(g["p_cal"].mean()), "strike": r4(g["placed"].mean()),
+                    "mean_1_over_bsp": r4((1 / g["bsp_pl"]).mean()), "roi_c5_ltp": r4(w2p.returns(g["ltp_pl"], g["placed"], g["dh"], 0.05).mean()),
+                    "roi_c5_bsp": r4(w2p.returns(g["bsp_pl"], g["placed"], g["dh"], 0.05).mean())})
+    kgrad = {}
+    for c in cells:
+        if c["segment"] == "all" and "p_cal" in c["rule"]:
+            kgrad[c["rule"].split(">1+")[1]] = {"bets": c["bets"], "ltp_roi_c5": c["ltp_roi_c5"], "bsp_bets": c["bsp_bets"],
+                                               "bsp_roi_c5": c["bsp_roi_c5"], "bsp_se_cl_date": c["bsp_se_cl_date"], "worse_of": c["worse_of_roi_c5"]}
+    out({"section": "9_staleness_feasibility_winners_curse", "k": K,
+         "t30_marker_(conditional_on_t30_present)": {"selected_bets_with_t30": int(has_t30.sum()), "share_of_selected": r4(has_t30.mean()), **t30rows},
+         "ltp_place_book_fully_priced_selected": brows,
+         "share_all_fully_priced_races_with_book_lt_0.95": r4((all_book < 0.95).mean()),
+         "share_selected_fully_priced_bets_in_races_with_book_lt_0.95": r4((sel.loc[sel["all_priced"], "book_over_nw"] < 0.95).mean()),
+         "winners_curse": wc, "winners_curse_by_band_bsp_subset": wcb,
+         "k_gradient_all_segment_p_cal": kgrad,
+         "share_selected_at_15plus": r4((sel["ltp_pl"] >= 15).mean()), "share_selected_harness": r4(sel["harness"].mean())})
+
     # ---- 8. corrected estimate ------------------------------------------------------------------
     sp = basic(rb5)
     touched = hb[hb["ratio"] >= 1.0]
     rt = w2p.returns(touched["ltp_pl"], touched["placed"], touched["dh"], 0.05)
-    out({"section": "8_corrected_estimate",
+    out({"section": "8_corrected_estimate", "k": K,
          "paper_at_ltp_pre": {"bets": rep["bets"], "roi_c5": rep["roi"], "se_per_bet": rep["se_per_bet"], "se_cl_date": rep["se_cl_date"],
                               "halves": rep["halves_roi"], "halves_se_cl_date": rep["halves_se_cl_date"]},
          "executable_sp_bet_decide_ltp_settle_bsp": {"bets": sp["bets"], "roi_c5": sp["roi"], "se_per_bet": sp["se"],
