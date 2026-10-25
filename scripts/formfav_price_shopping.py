@@ -182,6 +182,45 @@ def cell(df: pd.DataFrame, mask, price_col: str, mid) -> dict:
     return out
 
 
+ALIGN_MIN = 0.8  # [A-65] a bookmaker's log prices must correlate at least this much with the other books' on the same runners
+
+
+def feed_alignment(df: pd.DataFrame) -> set[str]:
+    """[A-63] Per code/country and bookmaker: if a bookmaker's prices are attached to the wrong runners, its log
+    prices will not correlate with the other books' within a race, and betting every runner at its price will not
+    lose its margin. Prints the per-group report and returns the groups [A-65] in which any bookmaker with 200+
+    quotes and 50+ runners shared with other books correlates below ALIGN_MIN: a consensus built on such a feed is
+    meaningless, so those groups are dropped from every pooled cell."""
+    misaligned = set()
+    for grp, g in df.groupby("group"):
+        books_g = pd.Series([b for d_ in g["books_0"] for b in d_]).value_counts()
+        prof = {}
+        for b in books_g.index:
+            px = g["books_0"].map(lambda d_, b=b: d_.get(b, math.nan))
+            has = px.notna()
+            if has.sum() < 200:
+                continue
+            others = g["books_0"].map(lambda d_, b=b: float(np.median([v for k, v in d_.items() if k != b])) if len(d_) > 1 else math.nan)
+            both = has & others.notna()
+            corr = None
+            if both.sum() > 50:
+                x, y = np.log(px[both].to_numpy(dtype=float)), np.log(others[both].to_numpy(dtype=float))
+                corr = round(float(np.corrcoef(x, y)[0, 1]), 3)
+            sub = g[has]
+            full = sub.groupby("race_id")["race_id"].transform("size") == sub["field"]
+            over = (1 / px[has][full]).groupby(sub[full]["race_id"]).sum()
+            prof[b] = {"runner_coverage": round(float(has.mean()), 3),
+                       "log_price_corr_with_other_books": corr, "runners_with_other_books": int(both.sum()),
+                       "own_book_pct_median": round(float(over.median()), 4) if len(over) else None,
+                       "every_runner_at_its_price": summary(np.where(sub["won"] == 1, px[has] - 1, -1.0)),
+                       "runners_only_this_book": round(float((g["books_0"].map(len) == 1)[has].mean()), 3)}
+        print(json.dumps({"test": "feed_alignment_by_group", "group": grp, "books": prof}))
+        if any(v["log_price_corr_with_other_books"] is not None and v["log_price_corr_with_other_books"] < ALIGN_MIN
+               for v in prof.values()):
+            misaligned.add(grp)
+    return misaligned
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
@@ -207,6 +246,17 @@ def main() -> int:
                       "arb_races_sum_inv_best_below_1": int((races["sum_inv_best"] < 1).sum()),
                       "best_over_median_median_ratio": round(float((df["best"] / df["median"]).median()), 4),
                       "early_price_coverage": {str(m): round(float(df[f"best_{m}"].notna().mean()), 3) for m in EARLY}}))
+    misaligned = feed_alignment(df)
+    if misaligned:  # [A-65]
+        print(json.dumps({"test": "groups_excluded_as_misaligned", "groups": sorted(misaligned),
+                          "races_dropped": int(df[df["group"].isin(misaligned)]["race_id"].nunique()),
+                          "runners_dropped": int(df["group"].isin(misaligned).sum())}))
+        df = df[~df["group"].isin(misaligned)].reset_index(drop=True)
+        if df.empty:
+            print("no aligned groups left")
+            return 1
+        days = sorted(df["date"].unique())
+        mid = days[len(days) // 2]
     # 1. price shopping at the jump
     for fair in ("fair_median", "fair_books"):
         for k in (0.0, 0.05, 0.1, 0.2):
@@ -353,32 +403,7 @@ def main() -> int:
                               **cell(df, top, "best_persist_0", mid),
                               "and_value_vs_consensus": cell(df, top & guarded, "best_persist_0", mid)}))
     held15 = book_quotes  # noqa: F841 (documented below)
-    # 2b-7. feed alignment and calibration per bookmaker per group [A-63]: if a bookmaker's prices are attached to
-    # the wrong runners, its log prices will not correlate with the other books' within a race, and betting every
-    # runner at its price will lose far more than its margin. A consensus built on such a feed is meaningless.
-    for grp, g in df.groupby("group"):
-        books_g = pd.Series([b for d_ in g["books_0"] for b in d_]).value_counts()
-        prof = {}
-        for b in books_g.index:
-            px = g["books_0"].map(lambda d_, b=b: d_.get(b, math.nan))
-            has = px.notna()
-            if has.sum() < 200:
-                continue
-            others = g["books_0"].map(lambda d_, b=b: float(np.median([v for k, v in d_.items() if k != b])) if len(d_) > 1 else math.nan)
-            both = has & others.notna()
-            corr = None
-            if both.sum() > 50:
-                x, y = np.log(px[both].to_numpy(dtype=float)), np.log(others[both].to_numpy(dtype=float))
-                corr = round(float(np.corrcoef(x, y)[0, 1]), 3)
-            sub = g[has]
-            full = sub.groupby("race_id")["race_id"].transform("size") == sub["field"]
-            over = (1 / px[has][full]).groupby(sub[full]["race_id"]).sum()
-            prof[b] = {"runner_coverage": round(float(has.mean()), 3),
-                       "log_price_corr_with_other_books": corr, "runners_with_other_books": int(both.sum()),
-                       "own_book_pct_median": round(float(over.median()), 4) if len(over) else None,
-                       "every_runner_at_its_price": summary(np.where(sub["won"] == 1, px[has] - 1, -1.0)),
-                       "runners_only_this_book": round(float((g["books_0"].map(len) == 1)[has].mean()), 3)}
-        print(json.dumps({"test": "feed_alignment_by_group", "group": grp, "books": prof}))
+    # feed alignment per group was reported and applied before any pooled cell (feed_alignment) [A-63][A-65]
     # the guarded value rule again, requiring at least two OTHER aligned books in the consensus [A-63]
     n_books = df["books_0"].map(len)
     for grp in sorted(df["group"].unique()):
