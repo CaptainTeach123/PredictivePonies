@@ -39,6 +39,7 @@ def main() -> int:
     files = bad = 0
     buf, written, header = [], 0, True
     countries, types = {}, {}
+    seen: set[str] = set()
 
     def flush():
         nonlocal buf, written, header
@@ -71,7 +72,9 @@ def main() -> int:
         for r in rows:
             types[r["market_type"]] = types.get(r["market_type"], 0) + 1
             countries[r["country"]] = countries.get(r["country"], 0) + 1
-        buf += [r for r in rows if r["market_type"] in keep_types
+        fresh = {r["market_id"] for r in rows} - seen  # archives can hold a market twice
+        seen |= fresh
+        buf += [r for r in rows if r["market_id"] in fresh and r["market_type"] in keep_types
                 and (keep_countries is None or r["country"] in keep_countries)]
         if len(buf) > 200_000:
             flush()

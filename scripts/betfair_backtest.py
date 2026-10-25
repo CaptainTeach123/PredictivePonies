@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--dir", type=Path, default=config.RAW_DIR / "betfair")
     ap.add_argument("--commission", type=float, default=0.08, help="your Betfair rate on net winnings")
     ap.add_argument("--country", default=None)
+    ap.add_argument("--code", choices=["all", "gallops", "harness"], default="all",
+                    help="harness = market names with Pace/Trot (Australian convention)")
     ap.add_argument("--table", type=Path, default=None, help="compact table from betfair_tar_to_table.py")
     a = ap.parse_args()
 
@@ -50,9 +52,13 @@ def main() -> int:
     if df.empty:
         print("no files")
         return 1
+    df = df.drop_duplicates(["market_id", "selection_id"])  # a market can appear in two files
     df = df[(df["market_type"] == "WIN") & df["won"].notna()]
     if a.country:
         df = df[df["country"] == a.country]
+    if a.code != "all":
+        harness = df["market_name"].fillna("").str.contains(r"\b(?:Pace|Trot)\b")
+        df = df[harness if a.code == "harness" else ~harness]
     one = df.groupby("market_id")["won"].transform("sum") == 1
     priced = df.groupby("market_id")["ltp_pre"].transform(lambda s: s.notna().all() and (s > 1).all())
     df = df[one & priced].copy()
