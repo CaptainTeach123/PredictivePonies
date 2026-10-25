@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ponies import config  # noqa: E402
 from ponies.exotics import fit_lambdas, order_probs, places_paid  # noqa: E402
-from ponies.formfav import load_dividends, load_store  # noqa: E402
+from ponies.formfav import load_dividends, load_store, only  # noqa: E402
 from formfav_experiments import prepare, walk_forward  # noqa: E402
 
 POOLS = ("Win", "Place", "Quinella", "Exacta", "Trifecta")
@@ -186,7 +186,7 @@ def main() -> int:
     ap.add_argument("--test-share", type=float, default=0.4)
     a = ap.parse_args()
 
-    df = prepare(load_store(a.store))
+    df = prepare(only(load_store(a.store)))
     divs = load_dividends(a.store)
     days = sorted(df["date"].unique())
     if len(days) < 5:

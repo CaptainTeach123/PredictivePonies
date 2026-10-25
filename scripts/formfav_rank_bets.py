@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ponies import config  # noqa: E402
 from ponies.exotics import places_paid  # noqa: E402
-from ponies.formfav import load_dividends, load_store  # noqa: E402
+from ponies.formfav import load_dividends, load_store, only  # noqa: E402
 from formfav_experiments import prepare  # noqa: E402
 
 
@@ -44,7 +44,7 @@ def main() -> int:
     ap.add_argument("--max-rank", type=int, default=6)
     a = ap.parse_args()
 
-    df = prepare(load_store(a.store))
+    df = prepare(only(load_store(a.store)))
     divs = load_dividends(a.store)
     df["prog_n"] = pd.to_numeric(df["program"], errors="coerce")
     df = df.sort_values(["race_id", "dec", "prog_n"])

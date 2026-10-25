@@ -24,7 +24,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import FF_FEATURE_NAMES, load_store  # noqa: E402
+from ponies.formfav import FF_FEATURE_NAMES, load_store, only  # noqa: E402
 from ponies.model import ConditionalLogit, _race_codes, race_softmax, win_targets  # noqa: E402
 
 
@@ -61,7 +61,7 @@ def main() -> int:
                     help="write predictions for upcoming races (licensed data: keep private)")
     a = ap.parse_args()
 
-    df = load_store(a.store)
+    df = only(load_store(a.store))  # [A-58] the win model is Australian gallops only
     if df.empty:
         print("store is empty")
         return 1

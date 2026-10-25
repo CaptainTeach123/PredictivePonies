@@ -23,7 +23,7 @@ on:
         default: "29"
       max_calls:
         description: "API call budget for this run"
-        default: "2500"
+        default: "6000"
 
 permissions:
   contents: read
@@ -73,7 +73,9 @@ jobs:
           python scripts/formfav_collect.py
           --days-back ${{ inputs.days_back || '29' }}
           --days-ahead 1
-          --max-calls ${{ inputs.max_calls || '2500' }}
+          --codes gallops,harness,greyhounds
+          --countries au,nz,gb,ie,hk
+          --max-calls ${{ inputs.max_calls || '6000' }}
 
       - name: Train and evaluate (summary numbers only)
         if: github.event_name == 'schedule' || inputs.mode == 'collect' || inputs.mode == 'train'

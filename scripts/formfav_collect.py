@@ -162,95 +162,114 @@ def _save(path: Path, data: dict) -> None:
 
 
 def collect(client: McpClient, days: list[date], countries: set[str], max_calls: int, pause: float,
-            workers: int = 4) -> dict:
+            workers: int = 4, codes: tuple[str, ...] = ("gallops",)) -> dict:
     """Fill the store for ``days``. Re-runs only fetch what's missing or stale:
-    results until 'final'; cards/prices of upcoming races are refreshed."""
+    results until 'final'; cards/prices of upcoming races are refreshed.
+
+    Australian gallops (the dashboard's races) are refreshed while upcoming and
+    get FormFav's predictions. Every other code/country is fetched once, after
+    the race day, for the price backtests only [A-58]: get_prices returns the
+    whole movement history afterwards, so there is nothing to poll."""
     stats = {"meetings": 0, "cards": 0, "prices": 0, "predictions": 0, "results_final": 0, "errors": 0}
     now = datetime.now(timezone.utc)
     today = datetime.now(SYDNEY).date()
     for d in days:
-        if client.calls >= max_calls:
-            break
-        try:
-            meetings = client.tool("get_meetings", date=d.isoformat())["meetings"]
-        except Exception as e:  # noqa: BLE001
-            print(f"{d}: meetings failed ({type(e).__name__})")
-            stats["errors"] += 1
-            continue
-        for m in meetings:
-            if m.get("country") not in countries or m.get("abandoned"):
+        for code in codes:
+            if client.calls >= max_calls:
+                break
+            try:
+                meetings = client.tool("get_meetings", date=d.isoformat(), race_code=code)["meetings"]
+            except Exception as e:  # noqa: BLE001
+                print(f"{d} {code}: meetings failed ({type(e).__name__})")
+                stats["errors"] += 1
                 continue
-            path = STORE / d.isoformat() / f"{m['slug']}.json"
-            data = _load(path)
-            data["meeting"] = {k: m.get(k) for k in ("track", "slug", "country")}
-            data.setdefault("predictions", {})
-            stats["meetings"] += 1
-            past = d < today
-            # past races: fetch once; upcoming races: refresh each run. Prices
-            # last fetched before the start are fetched again so the stored
-            # movement history reaches the jump [A-42].
-            def have(kind, n):
-                if n not in data[kind]:
-                    return False
-                if kind != "prices":
-                    return True
-                start = (data["cards"].get(n) or {}).get("startTime") or data[kind][n].get("startTime")
-                got = data["fetched"].get(f"price:{n}")
-                return not (start and got and datetime.fromisoformat(got) < datetime.fromisoformat(start.replace("Z", "+00:00")))
-
-            jobs = [(kind, tool, str(race["raceNumber"]))
-                    for race in m.get("races", []) if not race.get("abandoned")
-                    for kind, tool in (("cards", "get_race_card"), ("prices", "get_prices"),
-                                       ("predictions", "get_predictions"))
-                    if not (past and have(kind, str(race["raceNumber"])))]
-            jobs = jobs[:max(0, max_calls - client.calls)]
-
-            def fetch(job, slug=m["slug"], day=d.isoformat()):
-                kind, tool, n = job
-                time.sleep(pause)
-                try:
-                    return job, client.tool(tool, date=day, track=slug, race=int(n))
-                except FormFavError:
-                    if kind != "predictions":
-                        raise
-                    return job, {"unavailable": True}  # FormFav predicts only some races
-
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                for fut in [pool.submit(fetch, j) for j in jobs]:
-                    try:
-                        (kind, tool, n), payload = fut.result()
-                        data[kind][n] = payload
-                        data["fetched"][f"{kind[:-1]}:{n}"] = now.isoformat(timespec="seconds")
-                        stats[kind] += 1
-                    except Exception as e:  # noqa: BLE001
-                        stats["errors"] += 1
-                        print(f"{d} {m['slug']} {type(e).__name__}")
-            res = data.get("results") or {}
-            finished = res.get("races") and all(r.get("resultStatus") in ("final", "abandoned") for r in res["races"])
-            if past and not finished and client.calls < max_calls:
-                try:
-                    data["results"] = client.tool("get_race_results", date=d.isoformat(), track=m["slug"])
-                    data["fetched"]["results"] = now.isoformat(timespec="seconds")
-                    stats["results_final"] += sum(r.get("resultStatus") == "final"
-                                                  for r in data["results"].get("races", []))
-                except Exception as e:  # noqa: BLE001
-                    stats["errors"] += 1
-                    print(f"{d} {m['slug']} results: {type(e).__name__}")
-                time.sleep(pause)
-            _save(path, data)
+            for m in meetings:
+                if m.get("country") not in countries or m.get("abandoned"):
+                    continue
+                legacy = code == "gallops" and m.get("country") == "au"
+                past = d < today
+                if not legacy and not past:
+                    continue
+                extra = {} if legacy else {"country": m["country"], "race_code": code}
+                path = STORE / d.isoformat() / (f"{m['slug']}.json" if legacy else f"{code}-{m['country']}-{m['slug']}.json")
+                data = _load(path)
+                data["meeting"] = {**{k: m.get(k) for k in ("track", "slug", "country")}, "race_code": code}
+                data.setdefault("predictions", {})
+                stats["meetings"] += 1
+                _collect_meeting(client, data, path, m, d, past, legacy, extra, max_calls, pause, workers, now, stats)
     return stats
+
+
+def _collect_meeting(client, data, path, m, d, past, legacy, extra, max_calls, pause, workers, now, stats):
+    # past races: fetch once; upcoming races: refresh each run. Prices
+    # last fetched before the start are fetched again so the stored
+    # movement history reaches the jump [A-42].
+    def have(kind, n):
+        if n not in data[kind]:
+            return False
+        if kind != "prices":
+            return True
+        start = (data["cards"].get(n) or {}).get("startTime") or data[kind][n].get("startTime")
+        got = data["fetched"].get(f"price:{n}")
+        return not (start and got and datetime.fromisoformat(got) < datetime.fromisoformat(start.replace("Z", "+00:00")))
+
+    kinds = (("cards", "get_race_card"), ("prices", "get_prices")) + \
+            ((("predictions", "get_predictions"),) if legacy else ())
+    jobs = [(kind, tool, str(race["raceNumber"]))
+            for race in m.get("races", []) if not race.get("abandoned")
+            for kind, tool in kinds
+            if not (past and have(kind, str(race["raceNumber"])))]
+    jobs = jobs[:max(0, max_calls - client.calls)]
+
+    def fetch(job, slug=m["slug"], day=d.isoformat()):
+        kind, tool, n = job
+        time.sleep(pause)
+        try:
+            return job, client.tool(tool, date=day, track=slug, race=int(n), **extra)
+        except FormFavError:
+            if kind != "predictions":
+                raise
+            return job, {"unavailable": True}  # FormFav predicts only some races
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in [pool.submit(fetch, j) for j in jobs]:
+            try:
+                (kind, tool, n), payload = fut.result()
+                data[kind][n] = payload
+                data["fetched"][f"{kind[:-1]}:{n}"] = now.isoformat(timespec="seconds")
+                stats[kind] += 1
+            except Exception as e:  # noqa: BLE001
+                stats["errors"] += 1
+                print(f"{d} {m['slug']} {type(e).__name__}")
+    res = data.get("results") or {}
+    finished = res.get("races") and all(r.get("resultStatus") in ("final", "abandoned") for r in res["races"])
+    if past and not finished and client.calls < max_calls:
+        try:
+            data["results"] = client.tool("get_race_results", date=d.isoformat(), track=m["slug"], **extra)
+            data["fetched"]["results"] = now.isoformat(timespec="seconds")
+            stats["results_final"] += sum(r.get("resultStatus") == "final"
+                                          for r in data["results"].get("races", []))
+        except Exception as e:  # noqa: BLE001
+            stats["errors"] += 1
+            print(f"{d} {m['slug']} results: {type(e).__name__}")
+        time.sleep(pause)
+    _save(path, data)
 
 
 def store_summary() -> dict:
     files = list(STORE.glob("????-??-??/*.json"))  # day folders only (not predictions/)
     races = final = 0
+    by_code: dict[str, int] = {}
     for f in files:
         d = json.loads(f.read_text())
         races += len(d.get("cards", {}))
         final += sum(r.get("resultStatus") == "final" for r in (d.get("results") or {}).get("races", []))
+        meta = d.get("meeting") or {}
+        key = f"{meta.get('race_code') or 'gallops'}/{meta.get('country') or 'au'}"
+        by_code[key] = by_code.get(key, 0) + len(d.get("cards", {}))
     days = sorted({f.parent.name for f in files})
     return {"meetings": len(files), "race_cards": races, "races_with_final_result": final,
-            "days": f"{days[0]} .. {days[-1]}" if days else "-"}
+            "race_cards_by_code": by_code, "days": f"{days[0]} .. {days[-1]}" if days else "-"}
 
 
 def main() -> int:
@@ -259,6 +278,7 @@ def main() -> int:
     ap.add_argument("--days-back", type=int, default=3, help="past days to fill (max 30)")
     ap.add_argument("--days-ahead", type=int, default=1, help="future days (cards + live odds)")
     ap.add_argument("--countries", default="au", help="comma-separated FormFav country codes")
+    ap.add_argument("--codes", default="gallops", help="comma-separated: gallops,harness,greyhounds")
     ap.add_argument("--max-calls", type=int, default=2500, help="stop after this many API calls")
     ap.add_argument("--pause", type=float, default=0.3, help="seconds before each call, per worker")
     ap.add_argument("--workers", type=int, default=4, help="parallel requests within a meeting")
@@ -278,7 +298,8 @@ def main() -> int:
     # oldest first, so the days about to leave the 30-day window are saved first
     days = [today - timedelta(days=i) for i in range(min(a.days_back, 29), 0, -1)] + \
            [today + timedelta(days=i) for i in range(0, a.days_ahead + 1)]
-    stats = collect(client, days, set(a.countries.split(",")), a.max_calls, a.pause, a.workers)
+    stats = collect(client, days, set(a.countries.split(",")), a.max_calls, a.pause, a.workers,
+                    tuple(a.codes.split(",")))
     print("this run:", json.dumps({**stats, "api_calls": client.calls}))
     print("store:   ", json.dumps(store_summary()))
     return 0

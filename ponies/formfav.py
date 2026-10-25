@@ -264,8 +264,25 @@ def market_open(prices: dict | None) -> dict:
     return out
 
 
+def race_key(meta: dict | None, track: str, date: str, number: int) -> str:
+    """[A-58] Race id. Australian gallops keep the original form
+    (track-date-number); other codes and countries are prefixed so ids never
+    collide across codes."""
+    code = (meta or {}).get("race_code") or "gallops"
+    country = (meta or {}).get("country") or "au"
+    base = f"{slug(track)}-{date}-{int(number)}"
+    return base if (code, country) == ("gallops", "au") else f"{code}-{country}-{base}"
+
+
+def only(df: pd.DataFrame, race_code: str = "gallops", country: str = "au") -> pd.DataFrame:
+    """Rows of one code and country (the win model is fitted per code [A-58])."""
+    if df.empty or "race_code" not in df:
+        return df
+    return df[(df["race_code"] == race_code) & (df["country"] == country)]
+
+
 def race_rows(card: dict, result: dict | None = None, prices: dict | None = None,
-              predictions: dict | None = None) -> list[dict]:
+              predictions: dict | None = None, meta: dict | None = None) -> list[dict]:
     """One row per runner that started (scratchings dropped [A-21]).
 
     With ``result``: finish_position, won, and final_odds from the starting
@@ -283,8 +300,9 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
     runners = [r for r in card.get("runners", [])
                if not r.get("scratched") and not placings.get(r.get("number"), {}).get("scratched")]
     track = slug(card["track"])
-    race_id = f"{track}-{card['date']}-{int(card['raceNumber'])}"
-    country = (runners[0].get("country") if runners else "") or "au"
+    race_id = race_key(meta, card["track"], card["date"], card["raceNumber"])
+    race_code = (meta or {}).get("race_code") or "gallops"
+    country = (meta or {}).get("country") or (runners[0].get("country") if runners else "") or "au"
     weights = [(_num(r.get("weight")) - (_num(r.get("claim")) if r.get("claim") else 0.0)) for r in runners]
     mean_w = pd.Series(weights).mean()
     n = len(runners)
@@ -298,7 +316,7 @@ def race_rows(card: dict, result: dict | None = None, prices: dict | None = None
         sex = (r.get("sex") or "").strip()
         rows.append({
             "race_id": race_id, "date": pd.Timestamp(card["date"]), "track": track,
-            "race_number": int(card["raceNumber"]),
+            "race_number": int(card["raceNumber"]), "race_code": race_code, "country": country,
             "horse_id": f"FF-{slug(country)}-{slug(r['name'])}", "horse_name": r["name"],
             "program": str(r.get("number")), "post_position": _num(r.get("barrier")),
             "jockey_name": r.get("jockey") or None, "trainer_name": r.get("trainer") or None,
@@ -341,7 +359,8 @@ def load_store(directory: Path) -> pd.DataFrame:
             res = results.get(card["raceNumber"])
             final = res if res and res.get("resultStatus") == "final" else None
             rows += race_rows(card, final, prices.get(str(card["raceNumber"])),
-                              (meeting.get("predictions") or {}).get(str(card["raceNumber"])))
+                              (meeting.get("predictions") or {}).get(str(card["raceNumber"])),
+                              meeting.get("meeting"))
     return add_store_history(pd.DataFrame(rows))
 
 
@@ -357,7 +376,8 @@ def load_dividends(directory: Path) -> dict[str, list[dict]]:
             if res.get("resultStatus") != "final" or not res.get("dividends"):
                 continue
             card = (cards.get(str(res["raceNumber"])) if isinstance(cards, dict) else None) or res
-            race_id = f"{slug(card.get('track') or res.get('track'))}-{card.get('date') or res.get('date')}-{int(res['raceNumber'])}"
+            race_id = race_key(meeting.get("meeting"), card.get("track") or res.get("track"),
+                               card.get("date") or res.get("date"), res["raceNumber"])
             first = res["dividends"][0]
             key = (first.get("operator"), first.get("jurisdiction"))
             out[race_id] = [{"pool": d.get("pool"), "combination": [str(x) for x in d.get("combination") or []],

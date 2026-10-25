@@ -94,3 +94,15 @@ def test_formfav_predictions_only_if_made_before_start():
     assert abs(formfav_predictions(pred, "2026-10-22T05:00:00Z")[7] - math.log(0.2)) < 1e-12
     assert formfav_predictions(pred, "2026-10-21T20:00:00Z") == {}        # made after the start
     assert formfav_predictions({"unavailable": True}, "2026-10-22T05:00:00Z") == {}
+
+
+def test_race_key_and_code_filter():
+    import pandas as pd
+    from ponies.formfav import only, race_key
+    assert race_key(None, "Moe", "2026-10-18", 1) == "MOE-2026-10-18-1"
+    assert race_key({"race_code": "gallops", "country": "au"}, "Moe", "2026-10-18", 1) == "MOE-2026-10-18-1"
+    assert race_key({"race_code": "greyhounds", "country": "gb"}, "Romford", "2026-10-18", 3) == "greyhounds-gb-ROMFORD-2026-10-18-3"
+    rows = race_rows(CARD, RESULT, meta={"race_code": "harness", "country": "nz"})
+    assert rows[0]["race_id"].startswith("harness-nz-") and rows[0]["race_code"] == "harness" and rows[0]["country"] == "nz"
+    df = pd.DataFrame(rows + race_rows(CARD, RESULT))
+    assert len(only(df)) == 2 and len(only(df, "harness", "nz")) == 2

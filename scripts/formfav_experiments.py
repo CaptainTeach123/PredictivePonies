@@ -26,7 +26,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import FF_FEATURE_NAMES, load_store  # noqa: E402
+from ponies.formfav import FF_FEATURE_NAMES, load_store, only  # noqa: E402
 from ponies.model import ConditionalLogit, _race_codes, race_softmax, win_targets  # noqa: E402
 
 EXTRA = ["place_rate_distance", "place_rate_track", "place_rate_condition", "track_distance_win_rate",
@@ -148,7 +148,7 @@ def main() -> int:
     ap.add_argument("--max-select", type=int, default=6)
     a = ap.parse_args()
 
-    df = prepare(load_store(a.store))
+    df = prepare(only(load_store(a.store)))
     days = sorted(df["date"].unique())
     if len(days) < 5:
         print("too few race days")

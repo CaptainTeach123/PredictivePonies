@@ -34,7 +34,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import _quote_before, _when, slug  # noqa: E402
+from ponies.formfav import _quote_before, _when, race_key  # noqa: E402
 
 EARLY = (30, 60, 120)
 
@@ -92,7 +92,8 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         books = set.intersection(*(set(jump[r["number"]]) for r in runners))
         per_book = [shin([jump[r["number"]][b] for r in runners]) for b in books]
         fair_books = np.mean(per_book, axis=0) if per_book else fair_median
-        race_id = f"{slug(card['track'])}-{card['date']}-{int(card['raceNumber'])}"
+        meta = meeting.get("meeting") or {}
+        race_id = race_key(meta, card["track"], card["date"], card["raceNumber"])
         fair_early = {}
         for m in EARLY:  # consensus at T, using only prices known at T
             meds = [float(np.median(list(early[m][r["number"]].values()))) if r["number"] in early[m] else math.nan
@@ -102,6 +103,7 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
             n_ = r["number"]
             best_book = max(jump[n_], key=jump[n_].get)
             row = {"race_id": race_id, "date": pd.Timestamp(card["date"]), "field": len(runners),
+                   "group": f"{meta.get('race_code') or 'gallops'}/{meta.get('country') or 'au'}",
                    "won": float(placings[n_]["position"] == 1),
                    "median": median[i], "best": best[i], "best_book": best_book, "n_books": len(jump[n_]),
                    "fair_median": float(fair_median[i]), "fair_books": float(fair_books[i]),
@@ -197,6 +199,18 @@ def main() -> int:
             print(json.dumps({"test": "value_at_time_of_bet_price_held_5min", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
             m = m & (df[col] / df[f"median_{mins}"] <= 1.5).fillna(False)
             print(json.dumps({"test": "value_at_time_of_bet_held_5min_and_capped", "minutes_before": mins, "k": k, **cell(df, m, col, mid)}))
+    # 2b'. the same, per code and country (soft markets differ) [A-58]
+    for grp, g in df.groupby("group"):
+        if g["race_id"].nunique() < 50:
+            continue
+        for mins in (0, 30):
+            col = f"best_persist_{mins}"
+            m = ((df[col] * df[f"fair_{mins}"] > 1) & (df[col] / df[f"median_{mins}"] <= 1.5) & (df["group"] == grp)).fillna(False)
+            print(json.dumps({"test": "value_held_5min_capped_by_group", "group": grp, "minutes_before": mins,
+                              "races": int(g["race_id"].nunique()), **cell(df, m, col, mid)}))
+        print(json.dumps({"test": "all_runners_by_group", "group": grp, "price": "best",
+                          **cell(df, df["group"] == grp, "best", mid),
+                          "book_pct_median_price": round(float((1 / g["median"]).groupby(g["race_id"]).sum().median()), 4)}))
     # 2c. BETTABLE: momentum - firmed between 120 and 30 minutes out, bet at the best price 30 minutes out
     ratio = df["median_30"] / df["median_120"]
     for mm in (0.05, 0.1, 0.2):
