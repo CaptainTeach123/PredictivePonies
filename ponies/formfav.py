@@ -207,6 +207,34 @@ def _when(ts: str | None) -> pd.Timestamp | None:
         return None
 
 
+def effective_start(prices: dict | None, start: pd.Timestamp | None, tolerance_minutes: float = 15.0):
+    """[A-64] The jump as the price feeds see it. Bookmakers' fixed-odds
+    markets suspend at the off, so the median across bookmakers of each one's
+    last recorded price change sits within a few minutes of the real start.
+    When that median is more than ``tolerance_minutes`` after the labelled
+    start (seen for GB greyhounds, where FormFav's start times run an hour
+    early), the labelled time is replaced by that median minus one minute.
+    Returns (start, shifted_minutes)."""
+    if start is None:
+        return None, 0.0
+    lasts = {}
+    for r in (prices or {}).get("runners", []):
+        for q in r.get("prices", []):
+            if q.get("marketType", "fixed") != "fixed":
+                continue
+            ts = [t for m in (q.get("movements") or []) if (t := _when(m.get("at"))) is not None]
+            if ts:
+                b = q.get("bookmaker") or "?"
+                lasts[b] = max(lasts.get(b, ts[0]), max(ts))
+    if not lasts:
+        return start, 0.0
+    med = sorted(lasts.values())[len(lasts) // 2]
+    shift = (med - start).total_seconds() / 60
+    if shift > tolerance_minutes:
+        return med - pd.Timedelta(minutes=1), shift
+    return start, 0.0
+
+
 def _quote_before(q: dict, cutoff: pd.Timestamp | None) -> float | None:
     """[A-42] A bookmaker's last fixed price strictly before ``cutoff``.
     FormFav's 'close' can be an in-running or post-race quote (seen: 451 for a

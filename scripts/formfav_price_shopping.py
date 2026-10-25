@@ -34,9 +34,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import _quote_before, _when, race_key  # noqa: E402
+from ponies.formfav import _quote_before, _when, effective_start, race_key  # noqa: E402
 
 EARLY = (30, 60, 120)
+SHIFTS: dict[str, list] = {}
 
 
 def book_quotes(prices: dict | None, start, minutes_before: float = 0.0) -> dict:
@@ -99,6 +100,8 @@ def race_rows(path: Path, meeting: dict) -> list[dict]:
         start = _when(card.get("startTime") or prices.get("startTime"))
         if start is None:
             continue
+        start, shifted = effective_start(prices, start)  # [A-64]
+        SHIFTS.setdefault(f"{meta.get('race_code') or 'gallops'}/{meta.get('country') or 'au'}", []).append(shifted)
         placings = {p.get("number"): p for p in res.get("placings", [])}
         runners = [r for r in card.get("runners", []) if not r.get("scratched")
                    and not placings.get(r.get("number"), {}).get("scratched")
