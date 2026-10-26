@@ -29,7 +29,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import _when, effective_start, race_key  # noqa: E402
+from ponies.formfav import _when, book_information, drop_books, effective_start, misattached_books, race_key  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from formfav_price_shopping import book_quotes, cell, summary  # noqa: E402
@@ -50,8 +50,10 @@ def main() -> int:
     a = ap.parse_args()
     events, bets = [], []
     races_seen = races_with_scratching = 0
-    for path in sorted(a.store.glob("????-??-??/*.json")):
-        meeting = json.loads(path.read_text())
+    paths = sorted(a.store.glob("????-??-??/*.json"))
+    bad = misattached_books([x for path in paths for x in book_information(json.loads(path.read_text()))])  # [A-67]
+    for path in paths:
+        meeting = drop_books(json.loads(path.read_text()), bad)
         meta = meeting.get("meeting") or {}
         results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])
                    if r.get("resultStatus") == "final"}

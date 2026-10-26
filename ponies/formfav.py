@@ -292,6 +292,109 @@ def market_open(prices: dict | None) -> dict:
     return out
 
 
+def _group(meta: dict | None) -> str:
+    return f"{(meta or {}).get('race_code') or 'gallops'}/{(meta or {}).get('country') or 'au'}"
+
+
+def book_information(meeting: dict) -> list[tuple[str, str, str, float]]:
+    """[A-67] For each finished race in which a bookmaker priced every runner, how much
+    that book's prices say about the result: (group, bookmaker, ISO week, gain), where
+    gain = log(book's normalised probability of the winner) - log(1/field). A book whose
+    prices are attached to the right race scores well above 0 on average; one attached to
+    another race scores about 0 or below (seen: William Hill on GB greyhounds, whose quotes
+    for race N belonged to race N-3 while UK clocks were on summer time)."""
+    meta = meeting.get("meeting") or {}
+    results = {r["raceNumber"]: r for r in (meeting.get("results") or {}).get("races", [])
+               if r.get("resultStatus") == "final"}
+    cards = meeting.get("cards", {})
+    out = []
+    for card in (cards.values() if isinstance(cards, dict) else cards):
+        res = results.get(card.get("raceNumber"))
+        prices = (meeting.get("prices") or {}).get(str(card.get("raceNumber")))
+        if not res or not prices or card.get("abandoned"):
+            continue
+        start = _when(card.get("startTime") or prices.get("startTime"))
+        if start is None:
+            continue
+        start, _ = effective_start(prices, start)
+        placings = {p.get("number"): p for p in res.get("placings", [])}
+        runners = [r.get("number") for r in card.get("runners", []) if not r.get("scratched")
+                   and not placings.get(r.get("number"), {}).get("scratched")
+                   and placings.get(r.get("number"), {}).get("position") is not None]
+        winners = [k for k in runners if placings[k]["position"] == 1]
+        if len(runners) < 2 or len(winners) != 1:
+            continue
+        books: dict[str, dict] = {}
+        for r in prices.get("runners", []):
+            if r.get("number") not in runners:
+                continue
+            for q in r.get("prices", []):
+                if q.get("marketType", "fixed") != "fixed":
+                    continue
+                px = _quote_before(q, start)
+                if px and px > 1:
+                    books.setdefault(q.get("bookmaker") or "?", {})[r["number"]] = px
+        week = "%d-W%02d" % pd.Timestamp(card.get("date") or start).isocalendar()[:2]
+        for b, q in books.items():
+            if len(q) == len(runners):
+                inv = {k: 1 / v for k, v in q.items()}
+                p_win = inv[winners[0]] / sum(inv.values())
+                out.append((_group(meta), b, week, math.log(p_win) - math.log(1 / len(runners))))
+    return out
+
+
+def misattached_books(rows: list[tuple[str, str, str, float]], min_races: int = 50) -> set[tuple[str, str, str]]:
+    """[A-67] (group, bookmaker, week) whose quotes should be dropped: at the finest level
+    with at least ``min_races`` fully priced races (that week, else the whole period), the
+    book's mean information gain is not more than 2 standard errors above 0. Books with
+    too few races at either level are dropped too: an unverifiable feed is not used."""
+    from collections import defaultdict
+    import numpy as np
+    by_week, by_book = defaultdict(list), defaultdict(list)
+    for g, b, w, x in rows:
+        by_week[(g, b, w)].append(x)
+        by_book[(g, b)].append(x)
+
+    def informative(xs):
+        xs = np.asarray(xs, float)
+        return xs.mean() - 2 * xs.std(ddof=1) / math.sqrt(len(xs)) > 0
+
+    bad = set()
+    for (g, b, w), xs in by_week.items():
+        if len(xs) >= min_races:
+            ok = informative(xs)
+        elif len(by_book[(g, b)]) >= min_races:
+            ok = informative(by_book[(g, b)])
+        else:
+            ok = False
+        if not ok:
+            bad.add((g, b, w))
+    return bad
+
+
+def drop_books(meeting: dict, bad: set[tuple[str, str, str]]) -> dict:
+    """[A-67] The meeting with the quotes of misattached (group, bookmaker, week) removed."""
+    if not bad:
+        return meeting
+    g = _group(meeting.get("meeting"))
+    cards = meeting.get("cards", {})
+    weeks = {}
+    for card in (cards.values() if isinstance(cards, dict) else cards):
+        d = card.get("date")
+        if d:
+            weeks[str(card.get("raceNumber"))] = "%d-W%02d" % pd.Timestamp(d).isocalendar()[:2]
+    prices = {}
+    for n, pr in (meeting.get("prices") or {}).items():
+        w = weeks.get(str(n))
+        if not isinstance(pr, dict) or w is None:
+            prices[n] = pr
+            continue
+        runners = [{**r, "prices": [q for q in r.get("prices", []) if (g, q.get("bookmaker") or "?", w) not in bad]}
+                   for r in pr.get("runners", [])]
+        prices[n] = {**pr, "runners": runners}
+    return {**meeting, "prices": prices}
+
+
 def race_key(meta: dict | None, track: str, date: str, number: int) -> str:
     """[A-58] Race id. Australian gallops keep the original form
     (track-date-number); other codes and countries are prefixed so ids never

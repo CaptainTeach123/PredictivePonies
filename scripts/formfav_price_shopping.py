@@ -34,7 +34,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config, odds  # noqa: E402
-from ponies.formfav import _quote_before, _when, effective_start, race_key  # noqa: E402
+from ponies.formfav import (_quote_before, _when, book_information, drop_books, effective_start,  # noqa: E402
+                            misattached_books, race_key)
 
 EARLY = (30, 60, 120)
 SHIFTS: dict[str, list] = {}
@@ -221,13 +222,25 @@ def feed_alignment(df: pd.DataFrame) -> set[str]:
     return misaligned
 
 
+def report_dropped(bad: set) -> None:
+    """[A-67] Which bookmaker feeds were dropped, by code/country: books and weeks."""
+    by = defaultdict(lambda: defaultdict(list))
+    for g, b, w in sorted(bad):
+        by[g][b].append(w)
+    print(json.dumps({"test": "book_weeks_dropped_as_uninformative",
+                      "groups": {g: {b: len(ws) for b, ws in v.items()} for g, v in by.items()}}))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
     a = ap.parse_args()
+    paths = sorted(a.store.glob("????-??-??/*.json"))
+    bad = misattached_books([x for path in paths for x in book_information(json.loads(path.read_text()))])  # [A-67]
+    report_dropped(bad)
     rows = []
-    for path in sorted(a.store.glob("????-??-??/*.json")):
-        rows += race_rows(path, json.loads(path.read_text()))
+    for path in paths:
+        rows += race_rows(path, drop_books(json.loads(path.read_text()), bad))
     df = pd.DataFrame(rows)
     if df.empty:
         print("no races with results and prices")

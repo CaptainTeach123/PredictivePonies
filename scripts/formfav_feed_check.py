@@ -41,7 +41,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ponies import config  # noqa: E402
-from ponies.formfav import _quote_before, _when, effective_start  # noqa: E402
+from ponies.formfav import _quote_before, _when, book_information, effective_start, misattached_books  # noqa: E402
 
 OFFSETS = range(-15, 16)
 
@@ -127,9 +127,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
     a = ap.parse_args()
-    files = []
+    files, info = [], []
     for path in sorted(a.store.glob("????-??-??/*.json")):
-        files.append(races_in(json.loads(path.read_text())))
+        meeting = json.loads(path.read_text())
+        files.append(races_in(meeting))
+        info += book_information(meeting)
+    bad = misattached_books(info)  # [A-67]
+    weeks = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    for g, b, w, _ in info:
+        weeks[g][b][1] += 1
+        weeks[g][b][0] += (g, b, w) in bad
+    print(json.dumps({"test": "races_whose_book_quotes_are_dropped_A67",
+                      "groups": {g: {b: f"{d}/{n}" for b, (d, n) in v.items() if d} for g, v in weeks.items()}}))
     if not any(files):
         print("no races with results and prices")
         return 0

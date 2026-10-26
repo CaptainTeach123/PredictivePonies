@@ -106,3 +106,42 @@ def test_race_key_and_code_filter():
     assert rows[0]["race_id"].startswith("harness-nz-") and rows[0]["race_code"] == "harness" and rows[0]["country"] == "nz"
     df = pd.DataFrame(rows + race_rows(CARD, RESULT))
     assert len(only(df)) == 2 and len(only(df, "harness", "nz")) == 2
+
+
+def _feed_meeting(n_races=80, seed=0):
+    """Synthetic greyhound meeting: book 'a' prices each race correctly; book 'x' carries
+    the prices of race n-3 (the GB greyhound William Hill fault) [A-67]."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    cards, results, prices, fair = {}, {"races": []}, {}, {}
+    for n in range(1, n_races + 1):
+        p = rng.dirichlet(np.ones(6) * 1.5)
+        fair[n] = 1 / (p * 1.25)
+        w = int(rng.choice(6, p=p)) + 1
+        start = pd.Timestamp("2026-10-20T12:00:00Z") + pd.Timedelta(minutes=17 * n)
+        cards[str(n)] = {"raceNumber": n, "date": "2026-10-20", "track": "Hove",
+                         "startTime": start.isoformat().replace("+00:00", "Z"),
+                         "runners": [{"number": k, "name": f"d{k}"} for k in range(1, 7)]}
+        results["races"].append({"raceNumber": n, "resultStatus": "final",
+                                 "placings": [{"number": k, "position": 1 if k == w else 2} for k in range(1, 7)]})
+    for n in range(1, n_races + 1):
+        at = (pd.Timestamp(cards[str(n)]["startTime"]) - pd.Timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
+        src = fair.get(n - 3, fair[n])
+        prices[str(n)] = {"runners": [{"number": k, "prices": [
+            {"bookmaker": "a", "marketType": "fixed", "movements": [{"price": float(fair[n][k - 1]), "at": at}]},
+            {"bookmaker": "x", "marketType": "fixed", "movements": [{"price": float(src[k - 1]), "at": at}]}]}
+            for k in range(1, 7)]}
+    return {"meeting": {"race_code": "greyhounds", "country": "gb"}, "cards": cards, "results": results, "prices": prices}
+
+
+def test_misattached_book_is_dropped_and_honest_book_kept():
+    from ponies.formfav import book_information, drop_books, misattached_books
+    m = _feed_meeting()
+    rows = book_information(m)
+    bad = misattached_books(rows)
+    assert ("greyhounds/gb", "x", "2026-W43") in bad
+    assert ("greyhounds/gb", "a", "2026-W43") not in bad
+    kept = drop_books(m, bad)
+    books = {q["bookmaker"] for pr in kept["prices"].values() for r in pr["runners"] for q in r["prices"]}
+    assert books == {"a"}
