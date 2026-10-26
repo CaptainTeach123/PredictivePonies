@@ -13,7 +13,10 @@ and bookmaker, using that book's last price before the jump [A-42][A-64]:
   loglik_gain       the book's de-margined probabilities, mean log likelihood
                     of the winner minus log(1/field), per race. About 0 means
                     the prices carry no information about this race.
-  corr_with_sp      correlation of log price with log official SP, same runner.
+  corr_with_ref     correlation of log price with the reference price for the
+                    same runner: the official SP when the results feed has one,
+                    else the median of the other bookmakers (GB greyhound
+                    results carry no official SP).
   offset scan       the same correlation against race N+d of the same meeting
                     file (d = -15..15) and against runner positions rotated or
                     reversed within the race. A peak away from d = 0 / no
@@ -110,6 +113,16 @@ def races_in(meeting: dict) -> dict:
     return out
 
 
+def reference(r: dict, k, b: str):
+    """Reference price for runner k of race r when judging book b: the official SP from the
+    results feed when present, else the median of the other books' prices (GB greyhound
+    results carry no official SP, only each bookmaker's own)."""
+    if k in r["sp"]:
+        return r["sp"][k], "sp"
+    others = [q[k] for o, q in r["books"].items() if o != b and k in q]
+    return (float(np.median(others)), "other_books") if others else (None, None)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", type=Path, default=Path(config.RAW_DIR / "formfav"))
@@ -147,9 +160,11 @@ def main() -> int:
                 if b in r["last_move"]:
                     ba["last_move_minus_jump"].append(r["last_move"][b])
                 for k, px in q.items():
-                    if k in r["sp"]:
+                    ref, kind = reference(r, k, b)
+                    if ref:
                         ba["x"].append(math.log(px))
-                        ba["y"].append(math.log(r["sp"][k]))
+                        ba["y"].append(math.log(ref))
+                        ba["ref_kind"].append(kind == "sp")
                 if len(q) == len(runners) and len(runners) >= 2 and w is not None:
                     fav = min(runners, key=lambda k: (q[k], k))
                     ba["fav_won"].append(fav == w)
@@ -184,7 +199,8 @@ def main() -> int:
                         "fav_strike_se": round(float(np.std(fw, ddof=1) / math.sqrt(len(fw))), 4) if len(fw) > 1 else None,
                         "loglik_gain_per_race": m(ba["loglik_gain"]),
                         "book_pct_median": round(float(np.median(ba["book_pct"])), 4) if ba["book_pct"] else None,
-                        "corr_log_price_with_log_sp": corr(ba["x"], ba["y"]),
+                        "corr_log_price_with_reference": corr(ba["x"], ba["y"]),
+                        "reference_share_official_sp": m(ba["ref_kind"]),
                         "last_change_minus_jump_minutes_q10_q50_q90":
                             [round(float(v), 1) for v in np.quantile(lm, [.1, .5, .9])] if len(lm) else None}
         print(json.dumps({"test": "book_attachment", "group": g, "books": books}))
@@ -207,9 +223,11 @@ def main() -> int:
                             continue
                         for i, k in enumerate(r["runners"]):
                             # same trap position in the other race
-                            if k in r["books"][b] and i < len(other["runners"]) and other["runners"][i] in other["sp"]:
-                                x.append(math.log(r["books"][b][k]))
-                                y.append(math.log(other["sp"][other["runners"][i]]))
+                            if k in r["books"][b] and i < len(other["runners"]):
+                                ref, _ = reference(other, other["runners"][i], b)
+                                if ref:
+                                    x.append(math.log(r["books"][b][k]))
+                                    y.append(math.log(ref))
                 c = corr(x, y)
                 if c is not None:
                     by_d[d] = (c, len(x))
@@ -224,9 +242,10 @@ def main() -> int:
                         L = len(ks)
                         for i, k in enumerate(ks):
                             j = {"rot1": (i + 1) % L, "rot2": (i + 2) % L, "rot-1": (i - 1) % L, "reverse": L - 1 - i}[s]
-                            if k in r["books"][b] and ks[j] in r["sp"]:
+                            ref, _ = reference(r, ks[j], b) if k in r["books"][b] else (None, None)
+                            if ref:
                                 x.append(math.log(r["books"][b][k]))
-                                y.append(math.log(r["sp"][ks[j]]))
+                                y.append(math.log(ref))
                 rot[s] = corr(x, y)
             if by_d:
                 best = max(by_d, key=lambda d: by_d[d][0])
@@ -234,7 +253,7 @@ def main() -> int:
                             "corr_at_best_offset": by_d[best][0], "pairs_at_best_offset": by_d[best][1],
                             "corr_by_offset_-3_to_3": {str(d): by_d[d][0] for d in range(-3, 4) if d in by_d},
                             "runner_rotations": rot}
-        print(json.dumps({"test": "offset_scan_vs_official_sp", "group": g, "books": scans}))
+        print(json.dumps({"test": "offset_scan_vs_reference", "group": g, "books": scans}))
     return 0
 
 
