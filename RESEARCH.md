@@ -4,6 +4,28 @@ Web research by five parallel agents (academic literature, practitioner practice
 
 **Ranking:** composite = expected gross edge (0-1) x credibility of evidence (0-1) x legal accessibility to a US resident (0-1); scores are the lead's judgement from the findings, shown so the ordering can be re-weighted. Enablers (de-margining method, MBL, commission corrections) are folded into the methodology they modify rather than ranked.
 
+## Result on our data: the one rule that survived (2026-10-26)
+
+After two rounds of testing on four years of Betfair exchange history (about 15,000 cells, Benjamini-Hochberg across all of them) and 31 days of FormFav bookmaker prices, **one rule beats the market after commission: lay long-priced runners in the place market at Betfair SP.**
+
+**The rule (pre-registered as R1b@20).**
+- Markets: Betfair AU, GB and IE "To Be Placed" markets paying 2 or 3 places.
+- Skip the race if any place runner has not traded, if sum(1/place last traded price) divided by places paid is outside 0.97–1.03, or if the win market shows a late scratching (a saddlecloth gap with a win book below 0.97).
+- Bet: just before the off, an SP lay (MARKET_ON_CLOSE) on every runner whose place last traded price is 20 or longer, sized by a small fixed liability.
+
+**Evidence (December 2016 – November 2020).** 61,697 bets; +0.33% ± 0.06% of liability after 8% commission (z 5.3); halves +0.32% and +0.35%; last 12 months +0.37%; positive in every year and in each of AU, GB and IE. +0.42% at 5% commission, +0.28% at 10%. These runners place 0.81 times as often as their place SP implies. Two adversarial verifiers reproduced it, and an independent rebuild (`scripts/bf2_place_lay_independent.py`) gives the same bets and the same return. Scripts: `scripts/bf2_place_longshot_lay_sp.py` and `scripts/bf2_verify_place_longshot_lay_sp_*.py`.
+
+**Why it may exist.** SP backers put small stakes on long-priced place runners, pushing their place SP shorter than their chance. The bias is absent in the win market (laying 20+ at win SP loses 0.16%).
+
+**What it is worth.** About 500 units a year at 10 units of liability per lay (roughly 15,000 lays a year), with a yearly SD of about 195 units; about one month in four loses. It is fragile: one tick of adverse SP impact leaves +0.20%, two ticks +0.08%. The archive has no SP volumes, so capacity is unknown and probably small.
+
+**What it still needs.**
+- An out-of-sample test on Betfair files from November 2020 onward, with the code frozen.
+- A live forward test at minimum stakes for about a year, logging the decision price, the reconciled SP and the matched liability, with a pre-registered stop rule.
+- A Betfair account in a jurisdiction that allows one: Betfair's exchange is not open to US residents.
+
+Everything else tested, including form models, FormFav's predictions, price shopping across bookmakers (once every bookmaker feed was verified), place and exotic pools, late money, early prices, race-card segments and a combined harness model, either fails to beat the market or loses its edge to the margin or commission. Details are in the ASSUMPTIONS.md change log.
+
 ## 1. Soft-bookmaker outlier vs de-margined multi-book consensus (Kaunitz-style price shopping); US channel = bet365 fixed odds in Colorado/New Jersey only
 
 **Result on our data (2026-10-25, ASSUMPTIONS.md change log A-55..A-64).** Tested on 30 days of FormFav bookmaker prices across gallops, harness and greyhounds in AU/NZ/GB/IE/HK (8,756 races). The headline +20% ± 10% on 1,039 guarded bets came entirely from GB greyhounds, where the feed is misaligned (William Hill's prices correlate 0.02 with the other books on the same runners, start times are labelled an hour early, and backing every runner at William Hill's price 'wins' 18%, the signature of prices attached to the wrong dogs). With that group excluded the rule is about +16% ± 15% on 597 bets, the sharpest-book variant is −5%, and Ladbrokes outliers settled at Ladbrokes' own SP lose 25%. **No confirmed edge.** What would still make this testable: a price feed verified against the bookmakers' sites for one live meeting per code, and several months of data at 2,000+ bets per cell.
