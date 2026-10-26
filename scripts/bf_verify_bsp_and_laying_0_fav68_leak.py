@@ -299,6 +299,65 @@ def main() -> int:
          "sp_minus_one_tick [mean, se]": [r4(dt_.mean()), r4(dt_.std(ddof=1) / math.sqrt(len(dt_)))],
          "share_filled_at_ltp_to_tie_sp (rest one tick worse)": r4(p_star),
          "median_tick_share_of_price": r4(np.median(orig._increment(lp) / lp))})
+    # ---------------------------------------------------------------- 10. the low-book markets: removed-runner signature and corrections
+    low = bl < 0.97
+    ab = cf["all_bsp"].to_numpy()
+    scale = bl / bb  # if every last price misses the same removal, bsp/ltp ~ book_ltp/book_bsp
+    sig = {"low_book_share": r4(low.mean()), "low_book_saddlecloth_gap_share": r4(gap[low].mean()),
+           "normal_book_saddlecloth_gap_share": r4(gap[~low].mean()),
+           "low_book_median_book_ltp": r4(np.median(bl[low])), "low_book_median_book_bsp": r4(np.nanmedian(bb[low])),
+           "low_book_median_fav_ratio": r4(np.median(ratio[low])), "low_book_median_book_ratio": r4(np.nanmedian(scale[low])),
+           "low_book_corr_log_fav_ratio_vs_log_book_ratio": r4(np.corrcoef(lr[low & ab], np.log(scale[low & ab]))[0, 1]) if (low & ab).sum() > 2 else None,
+           "low_book_strike_vs_implied_ltp_vs_implied_bsp": [r4(won[low].mean()), r4((1 / lp[low]).mean()), r4((1 / bsp[low]).mean())],
+           "share_of_cell_total_from_low_book": r4((orig.back_returns(bsp[low], won[low], C) - orig.back_returns(lp[low], won[low], C)).sum()
+                                                    / (orig.back_returns(bsp, won, C) - orig.back_returns(lp, won, C)).sum())}
+    filt = {}
+    for thr in (0.95, 0.97, 0.98, 0.99):
+        keep = bl >= thr
+        filt[f"keep book_ltp >= {thr}"] = paired(bsp[keep], lp[keep], won[keep], first[keep], cf["date"].to_numpy()[keep]) + [r4(keep.mean())]
+    keep = ~(low & gap)
+    filt["drop low book with saddlecloth gap"] = paired(bsp[keep], lp[keep], won[keep], first[keep]) + [r4(keep.mean())]
+    # adjust the last price by the book ratio where the books disagree by > 3 points (a removal not reflected in ltp_pre)
+    adj_m = ab & ((bb - bl) > 0.03)
+    lp_adj = np.where(adj_m, np.maximum(1.01, lp * np.where(adj_m, scale, 1.0)), lp)
+    filt["ltp_pre x book_ltp/book_bsp where book_bsp - book_ltp > 0.03"] = paired(bsp, lp_adj, won, first, cf["date"].to_numpy()) + [r4(adj_m.mean())]
+    out({"section": "10_low_book_removal_signature", "columns": COLS + " + [se_cluster_day, z_cluster_day, share kept]", "signature": sig, "filters": filt})
+
+    # ---------------------------------------------------------------- 11. the sibling cells named in the claim, with the book filter
+    gal["book_l"] = gal["market_id"].map(book_l).to_numpy()
+    sib = {}
+    for lab, m in (("gallops all runners 2-3", gal["band"].to_numpy() == "2-3"),
+                   ("gallops favourites 2-5", gal["fav"].to_numpy() & (gal["fgroup"].to_numpy() == "2-5")),
+                   ("gallops favourites all", gal["fav"].to_numpy()),
+                   ("gallops all runners 50+", gal["band"].to_numpy() == "50+")):
+        m = m & R.bsp_ok
+        res = {"as_claimed": paired(R.bsp[m], R.lp[m], R.won[m], R.first[m])}
+        for thr in (0.97, 0.99):
+            k2 = m & (gal["book_l"].to_numpy() >= thr)
+            res[f"book_ltp >= {thr}"] = paired(R.bsp[k2], R.lp[k2], R.won[k2], R.first[k2]) + [r4(k2.sum() / max(m.sum(), 1))]
+        k3 = m & (gal["book_l"].to_numpy() < 0.97)
+        res["book_ltp < 0.97 only"] = paired(R.bsp[k3], R.lp[k3], R.won[k3], R.first[k3])
+        sib[lab] = res
+    out({"section": "11_sibling_cells", "columns": COLS + " + [share kept]", "rows": sib})
+
+    # ---------------------------------------------------------------- 12. gap x book 2x2, and the both-halves rule after the book filter
+    two = {}
+    for gl, gm in (("gap", gap), ("no_gap", ~gap)):
+        for blab, bm in (("book<0.97", bl < 0.97), ("0.97<=book<0.99", (bl >= 0.97) & (bl < 0.99)), ("book>=0.99", bl >= 0.99)):
+            m = gm & bm
+            two[f"{gl} & {blab}"] = paired(bsp[m], lp[m], won[m], first[m])
+    keep = bl >= 0.97
+    d = orig.back_returns(bsp[keep], won[keep], C) - orig.back_returns(lp[keep], won[keep], C)
+    fk = first[keep]
+    hz = [r4(orig._mean_se(d[fk])[0] / orig._mean_se(d[fk])[1]), r4(orig._mean_se(d[~fk])[0] / orig._mean_se(d[~fk])[1])]
+    dt = orig.back_returns(bsp[keep], won[keep], C) - orig.back_returns(orig.tick_down(lp[keep]), won[keep], C)
+    dh2 = orig.back_returns(bsp[keep], won[keep], C) - 0.5 * (orig.back_returns(lp[keep], won[keep], C) + orig.back_returns(orig.tick_down(lp[keep]), won[keep], C))
+    out({"section": "12_gap_x_book_and_filtered_rule", "columns": COLS, "rows": two,
+         "filtered book>=0.97 halves_z": hz,
+         "filtered sp_minus_one_tick_worse [mean, se]": [r4(dt.mean()), r4(dt.std(ddof=1) / math.sqrt(len(dt)))],
+         "filtered sp_minus_half_tick [mean, se]": [r4(dh2.mean()), r4(dh2.std(ddof=1) / math.sqrt(len(dh2)))],
+         "filtered roi c0/c5/c8 at ltp and bsp": [[r4(orig.back_returns(lp[keep], won[keep], c).mean()) for c in orig.COMMISSIONS],
+                                                  [r4(orig.back_returns(bsp[keep], won[keep], c).mean()) for c in orig.COMMISSIONS]]})
     out({"section": "done", "seconds": round(time.time() - t0, 1)})
     return 0
 

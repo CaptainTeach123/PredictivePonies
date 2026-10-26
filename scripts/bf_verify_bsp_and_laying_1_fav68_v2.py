@@ -250,6 +250,19 @@ def main():
                                                      / g.loc[(g["rank"] == 1) & (g["book_ltp"] >= 0.97), "ltp_pre"]).median())],
          "share_low_book_by_fgroup": {k: r4(v) for k, v in g[g["rank"] == 1].assign(lb=lambda d: d["book_ltp"] < 0.97)
                                       .groupby("fgroup")["lb"].mean().items()}})
+    # removal fingerprint: saddlecloth gap (max program > field size) and the t30 book of the same runners
+    raw = pd.read_parquet(a.path, columns=["market_id", "selection_id", "program"]).drop_duplicates(["market_id", "selection_id"])
+    prog = pd.to_numeric(raw["program"], errors="coerce").groupby(raw["market_id"]).max()
+    mm = g.groupby("market_id").agg(book_ltp=("book_ltp", "first"), fs=("field_size", "first"),
+                                    t30_all=("ltp_t30", lambda s: bool(s.notna().all())),
+                                    book_t30=("ltp_t30", lambda s: float((1.0 / s).sum())))
+    mm["gap"] = prog.reindex(mm.index).to_numpy() > mm["fs"].to_numpy()
+    lowm = mm["book_ltp"] < 0.97
+    t30m = mm["t30_all"]
+    out({"section": "3e removal fingerprint", "share_saddlecloth_gap_low_vs_rest": [r4(mm.loc[lowm, "gap"].mean()),
+                                                                                   r4(mm.loc[~lowm, "gap"].mean())],
+         "markets_all_runners_t30_low_vs_rest": [int((lowm & t30m).sum()), int((~lowm & t30m).sum())],
+         "median_book_t30_low_vs_rest": [r4(mm.loc[lowm & t30m, "book_t30"].median()), r4(mm.loc[~lowm & t30m, "book_t30"].median())]})
     # pre-off filters only (the book at ltp_pre is known before the off)
     for lo_b in (0.95, 0.97, 0.98, 0.99):
         d = fav68[fav68["book_ltp"] >= lo_b]
