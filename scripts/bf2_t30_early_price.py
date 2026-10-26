@@ -79,6 +79,10 @@ def out(obj) -> None:
     print(json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o)), flush=True)
 
 
+def r6(x):
+    return None if x is None or not np.isfinite(float(x)) else round(float(x), 6)
+
+
 def r4(x):
     if x is None:
         return None
@@ -287,8 +291,23 @@ def eval_cell(g: pd.DataFrame, side: str, settlement: str, staking: str, mid: pd
             if nf.any():
                 res["roi_8pct_unfilled_at_bsp"] = r4(returns(side, staking, bsp[nf], g["f"].to_numpy()[nf],
                                                              PRIMARY_C).mean())
+    # CLV-implied ROI: expected 8% return of the entry if the BSP-implied probability (1/bsp over the
+    # market's BSP book; fully BSP-priced markets) is true -- a low-variance read of the entry's edge
+    qq = (1 / bsp) / g["m_bsp_book"].to_numpy()
+    okq = ok & ~np.isnan(bsp) & g["m_all_bsp"].to_numpy()
+    if okq.any():
+        E, q = price[okq], qq[okq]
+        if side == "back":
+            ex = q * (E - 1) * (1 - PRIMARY_C) - (1 - q)
+        else:
+            ex = (1 - q) * (1 - PRIMARY_C) - q * (E - 1)
+            ex = ex / (E - 1) if staking == "liability" else ex
+        res["clv_implied_roi_8pct"] = r4(ex.mean())
     # paper references (NOT achievable): the t30 quote itself, and one tick worse taken by everyone
     fa = g["f"].to_numpy()
+    if okb.any():
+        res["paper_clv_mean_t30_over_bsp"] = r4(np.mean(t30[okb] / bsp[okb]))
+        res["paper_clv_mean_tick_worse_over_bsp"] = r4(np.mean(L[okb] / bsp[okb]))
     res["paper_roi_8pct_at_t30"] = r4(returns(side, staking, t30, fa, PRIMARY_C).mean()) if len(g) else None
     res["paper_roi_8pct_at_t30_tick_worse"] = r4(returns(side, staking, L, fa, PRIMARY_C).mean()) if len(g) else None
     if len(r8) > 2:
@@ -446,12 +465,12 @@ def prob_section(df: pd.DataFrame, seg: str, mid: pd.Timestamp) -> dict:
     l12 = dts >= np.datetime64(LAST12_FROM)
 
     def ms_(x):
-        return [r4(x.mean()), r4(x.std(ddof=1) / math.sqrt(len(x))) if len(x) > 1 else None]
+        return [r6(x.mean()), r6(x.std(ddof=1) / math.sqrt(len(x))) if len(x) > 1 else None]
     av = np.array(list(alphas.values()))
     res = {"segment": seg, "races": int(ev.sum()), "ll_t30_shin": r4(llm.mean()), "ll_model": r4(llp.mean()),
            "gain": ms_(dlt)[0], "se": ms_(dlt)[1], "z": r4(dlt.mean() / ms_(dlt)[1]) if ms_(dlt)[1] else None,
            "halves_gain": [ms_(dlt[fh])[0], ms_(dlt[~fh])[0]], "halves_se": [ms_(dlt[fh])[1], ms_(dlt[~fh])[1]],
-           "last12m_gain": r4(dlt[l12].mean()) if l12.any() else None,
+           "last12m_gain": r6(dlt[l12].mean()) if l12.any() else None,
            "alpha_first_last_min_max": [r4(av[0]), r4(av[-1]), r4(av.min()), r4(av.max())] if len(av) else None}
     # descriptive (NOT same timestamp): t30 vs ltp_pre vs BSP market log loss on markets fully priced at all three
     d2 = d[(d["m_pre_book"].between(0.97, 1.03)) & d["m_all_bsp"]]
@@ -568,7 +587,10 @@ def main() -> int:
                         "halves_se", "last12m_roi_8pct", "roi_0_5_10pct", "passes_G4_8pct", "passes_G4_5pct")},
                          "fill": row.get("fill_rate"), "clv_log": row.get("clv_mean_log"),
                          "clv_beat": row.get("clv_share_beats_close"),
-                         "paper_t30": row.get("paper_roi_8pct_at_t30"),
+                         "paper_t30": row.get("paper_roi_8pct_at_t30"), "clv_mean": row.get("clv_mean"),
+                         "clv_implied": row.get("clv_implied_roi_8pct"),
+                         "paper_tw": row.get("paper_roi_8pct_at_t30_tick_worse"),
+                         "paper_clv": row.get("paper_clv_mean_t30_over_bsp"),
                          "fill_only": row.get("roi_8pct_filled_only"), "unfilled": row.get("roi_8pct_unfilled_at_bsp"),
                          "mde": row.get("mde_80pct_full"), "fires_per_race": row.get("fires_per_race"),
                          "sens_keep": row["sens_keep_g6t30"]["roi_8pct"],
