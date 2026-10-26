@@ -89,6 +89,7 @@ jobs:
         continue-on-error: true
         run: |
           pip install -q -r requirements.txt
+          python scripts/formfav_feed_check.py
           python scripts/formfav_experiments.py
           python scripts/formfav_bets.py
           python scripts/formfav_rank_bets.py
