@@ -296,11 +296,15 @@ def load_country(cc: str, dev: bool) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     w["mcode"] = pd.factorize(w["market_id"])[0]
     w["priced"] = (w["ltp_pre"] > 1).fillna(False).to_numpy()
     w["inv_pre"] = np.where(w["priced"], 1.0 / w["ltp_pre"].where(w["priced"], 2.0), 0.0)
+    w["_won_na"] = w["won"].isna().astype(int)
+    w["_pn_na"] = w["pn"].isna().astype(int)
+    w["_pn_dup"] = w.duplicated(["mcode", "pn"]).astype(int)
     g = w.groupby("mcode", sort=False)
     m = pd.DataFrame({
-        "n": g.size(), "won_na": g["won"].apply(lambda x: x.isna().sum()), "won_sum": g["won"].sum(),
-        "priced": g["priced"].sum(), "book": g["inv_pre"].sum(), "pn_na": g["pn"].apply(lambda x: x.isna().sum()),
-        "pn_dup": g["pn"].apply(lambda x: x.duplicated().sum()), "pn_max": g["pn"].max()})
+        "n": g.size(), "won_na": g["_won_na"].sum(), "won_sum": g["won"].sum(),
+        "priced": g["priced"].sum(), "book": g["inv_pre"].sum(), "pn_na": g["_pn_na"].sum(),
+        "pn_dup": g["_pn_dup"].sum(), "pn_max": g["pn"].max()})
+    w = w.drop(columns=["_won_na", "_pn_na", "_pn_dup"])
     m["settled"] = (m["won_na"] == 0) & (m["won_sum"] >= 1)
     m["all_priced"] = m["priced"] == m["n"]
     m["book_ok"] = (m["book"] >= BOOK_LO) & (m["book"] <= BOOK_HI)
@@ -422,10 +426,10 @@ def gate_rule_evidence(w: pd.DataFrame, widths: dict) -> list:
         nog = s[~s["m_gap"]]
         prof = nog.groupby("pn")["dlp"].mean()
         pmax = s.groupby("mcode")["pn"].transform("max")
+        psum = s.groupby("mcode")["pn"].transform("sum")
         one_gap = s["m_gap"] & (pmax == s["n"] + 1)
-        # the missing saddlecloth of one-gap markets
-        miss = (s.groupby("mcode")["pn"].transform(lambda x: (set(range(1, int(x.max()) + 1)) - set(x.astype(int))).pop()
-                                                    if (x.max() == len(x) + 1) else np.nan))
+        # the missing saddlecloth of a one-gap market: 1 + ... + max minus the saddlecloths present
+        miss = pmax * (pmax + 1) / 2 - psum
         s = s.assign(gap_at=miss.where(one_gap))
         fg = s[s["gap_at"].notna() & (s["gap_at"] <= Wv)]
         x_w1 = fg.loc[fg["pn"] == Wv + 1, "dlp"]
@@ -455,25 +459,24 @@ def add_history(w: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     h["p_run"] = np.where(nb == nn, p_bsp, np.where(h["m_all_priced"], p_pre, np.nan))
     key = h["horse_name"].fillna("").astype(str).str.strip().str.lower()
     h["key"] = pd.factorize(key)[0]
-    h = h.sort_values(["key", "start"], kind="mergesort")
-    dup = int(h.duplicated(["key", "start"]).sum())
-    if dup:  # two runs of one key at one start (name collision in simultaneous races): keep both, no ordering
-        h = h.sort_values(["key", "start", "market_id"], kind="mergesort")
-    gk = h.groupby("key", sort=False)
-    h["n_prior"] = gk.cumcount()
-    h["prev_start"] = gk["start"].shift(1)
-    has_prev = h["n_prior"].to_numpy() > 0
-    same = has_prev & (h["prev_start"] >= h["start"]).to_numpy()
-    # never use a run that did not start strictly earlier
-    assert int(same.sum()) == dup, "leakage guard"
+    h["has_p"] = h["p_run"].notna().astype(float)
+    h["resid"] = np.where(h["has_p"] == 1, h["f"] - h["p_run"], 0.0)
+    # aggregate per (key, start) first so that two same-name runs at one start never see each other
+    ks = (h.groupby(["key", "start"], sort=True).agg(resid=("resid", "sum"), has_p=("has_p", "sum"), runs=("resid", "size"))
+          .reset_index())
+    gk = ks.groupby("key", sort=False)
+    ks["cs"] = gk["resid"].cumsum() - ks["resid"]                 # strictly earlier starts only
+    ks["npr"] = gk["has_p"].cumsum() - ks["has_p"]
+    ks["n_prior"] = gk["runs"].cumsum() - ks["runs"]
+    ks["prev_start"] = gk["start"].shift(1)
+    assert (ks["prev_start"].isna() | (ks["prev_start"] < ks["start"])).all(), "leakage guard: prev_start >= start"
+    h = h.merge(ks[["key", "start", "cs", "npr", "n_prior", "prev_start"]], on=["key", "start"], how="left").set_index(h.index)
+    dup = int((ks["runs"] > 1).sum())
+    has_prev = h["prev_start"].notna().to_numpy()
     days = (h["start"] - h["prev_start"]).dt.total_seconds().to_numpy() / 86400.0
-    days = np.where(same, np.nan, days)
-    has_p = h["p_run"].notna().to_numpy()
-    resid = np.where(has_p, h["f"].to_numpy() - h["p_run"].to_numpy(), 0.0)
-    cs = pd.Series(resid, index=h.index).groupby(h["key"]).cumsum().to_numpy() - resid
-    npr = pd.Series(has_p.astype(float), index=h.index).groupby(h["key"]).cumsum().to_numpy() - has_p
-    h["cum_resid"] = cs / (npr + SHRINK)
-    valid_prev = has_prev & ~same
+    has_p = h["has_p"].to_numpy()
+    h["cum_resid"] = h["cs"] / (h["npr"] + SHRINK)
+    valid_prev = has_prev
     h["no_prior"] = (~valid_prev).astype(float)
     h["log_days"] = np.where(valid_prev, np.log1p(np.minimum(np.nan_to_num(days, nan=365.0), 365.0)), 0.0)
     h["backup7"] = (valid_prev & (days <= BACKUP_DAYS)).astype(float)
@@ -795,12 +798,12 @@ def build_country(cc: str, dev: bool, widths_override=None, default_w=None, top_
 
 
 def month_rows_of(e: pd.DataFrame, months) -> dict:
-    st = e["start"].to_numpy()
+    stn = e["start"].dt.tz_convert(None).to_numpy()
+    assert (np.diff(stn.astype("int64")) >= 0).all(), "rows must be sorted by start"
     res = {}
     for m in months:
-        lo = np.datetime64(pd.Timestamp(m.start_time, tz="UTC").tz_convert(None))
-        hi = np.datetime64(pd.Timestamp((m + 1).start_time, tz="UTC").tz_convert(None))
-        stn = e["start"].dt.tz_convert(None).to_numpy()
+        lo = np.datetime64(m.start_time, "ns")
+        hi = np.datetime64((m + 1).start_time, "ns")
         res[m] = (int(np.searchsorted(stn, lo, "left")), int(np.searchsorted(stn, hi, "left")))
     return res
 
