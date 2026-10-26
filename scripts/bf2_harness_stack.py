@@ -750,9 +750,14 @@ def bet_cell(name: str, family: str, g: pd.DataFrame, mid_day, n_races_eval: int
     if "p_model" in gs:
         res["mean_p_model"] = r5(gs["p_model"].mean())
     res["won_over_p_mkt"] = r5(f.sum() / gs["p_mkt"].sum())
+    res["share_price_ge_50"] = r5((price >= 50).mean())
     if settlement == "bsp":
-        res["won_over_p_bsp_raw"] = r5(f.sum() / (1.0 / price).sum())
+        pb = gs["p_bsp"].to_numpy()
+        okb = np.isfinite(pb)
+        res["won_over_p_bsp_norm"] = r5(f[okb].sum() / pb[okb].sum()) if okb.any() else None
+        res["mean_bsp_over_ltp_pre"] = r5(np.mean(price / gs["ltp_pre"].to_numpy()))
     res["bets_per_race"] = r5(n / n_races_eval) if n_races_eval else None
+    res["share_races_with_bet"] = r5(len(np.unique(mkt)) / n_races_eval) if n_races_eval else None
     res["bets_per_month"] = r5(n / n_months) if n_months else None
     res["mde_80pct_power"] = r5(2.8 * se)
     g4 = (all(a is not None and b is not None and b > 0 and a > 2 * b for a, b in zip(hr, hs))
@@ -920,6 +925,15 @@ def main() -> None:
     assert te[[f"p_{v}" for v in feats]].notna().all().all()
     te["p_model"] = te["p_STACK"]
     tn["p_model"] = tn["p_STACK"]
+    for df in (te, tn):  # normalised BSP-implied probability (descriptive only; never a feature)
+        bok = (df["bsp"] > 1).fillna(False).to_numpy()
+        inv = np.where(bok, 1.0 / df["bsp"].where(bok, 2.0).to_numpy(), 0.0)
+        c_, u_ = pd.factorize(df["mcode"])
+        nb = np.bincount(c_, weights=bok.astype(float), minlength=len(u_))
+        nn = np.bincount(c_, minlength=len(u_))
+        sb = np.bincount(c_, weights=inv, minlength=len(u_))
+        full = (nb == nn)[c_]
+        df["p_bsp"] = np.where(full, inv / np.where(full, sb[c_], 1.0), np.nan)
     tn = tn[tn["p_model"].notna()].copy()
 
     # ---- coefficients (raw units) over the test months, chosen l2
@@ -988,16 +1002,23 @@ def main() -> None:
 
     def add_rules(df, ctry, md, settlements):
         nre = int(df["mcode"].nunique())
-        for v in ("STACK", "STACKX", "MKT"):
-            edge = df[f"p_{v}"] / df["p_mkt"] - 1
-            for k in K_VALUES:
-                for s in settlements:
-                    g = df[(edge > k).to_numpy()].assign(p_model=df[f"p_{v}"])
-                    c = bet_cell(f"{ctry}_{v}_edge_gt_{k:.2f}_{s}", f"{v}_edge", g, md, nre, n_months, s,
-                                 rule=f"back at {'BSP' if s == 'bsp' else 'ltp_pre (paper)'} when p_{v}/p_mkt - 1 > {k}",
-                                 country=ctry.upper(), exploratory=(v != "STACK"))
-                    cells.append(c)
-                    out(c)
+        variants = ("STACK", "STACKX", "MKT") if ctry == "au" else ("STACK",)
+        segments = (("all", np.ones(len(df), bool)), ("ltp_le20", (df["ltp_pre"] <= 20).to_numpy()))
+        for v in variants:
+            edge = (df[f"p_{v}"] / df["p_mkt"] - 1).to_numpy()
+            for seg, smask in segments:
+                if seg != "all" and (v != "STACK" or ctry != "au"):
+                    continue
+                for k in K_VALUES:
+                    for s in settlements:
+                        g = df[(edge > k) & smask].assign(p_model=df[f"p_{v}"])
+                        segtxt = "" if seg == "all" else " and ltp_pre <= 20"
+                        c = bet_cell(f"{ctry}_{v}_{seg}_edge_gt_{k:.2f}_{s}", f"{v}_edge_{seg}", g, md, nre, n_months, s,
+                                     rule=f"back at {'BSP' if s == 'bsp' else 'ltp_pre (paper)'} when p_{v}/p_mkt - 1 > {k}{segtxt}",
+                                     country=ctry.upper(), exploratory=(v != "STACK"))
+                        c["segment"] = seg
+                        cells.append(c)
+                        out(c)
         g46 = df["gate46"].to_numpy()
         for nm, mask, expl, rule in (
                 ("gate46_and_backup7", g46 & (df["backup7"] == 1).to_numpy(), False, "flat back: front gate 4-6 (mobile) AND previous run <= 7 days"),
@@ -1019,8 +1040,8 @@ def main() -> None:
     for c in cells:
         if c["country"] == "NZ":
             c["passes_all_gates"] = False  # replication only; the claim is the AU rule
-    prim = next(c for c in cells if c["cell"] == "au_STACK_edge_gt_0.10_bsp")
-    out({"section": "primary", "pre_registered": "AU STACK edge > 0.10 at BSP, 8% commission", "cell": prim})
+    prim = next(c for c in cells if c["cell"] == "au_STACK_all_edge_gt_0.10_bsp")
+    out({"section": "primary", "pre_registered": "AU STACK edge > 0.10 (all prices) at BSP, 8% commission", "cell": prim})
     n_ll = len(ll_cells)
     out({"section": "g5_count", "bet_cells": len(cells), "logloss_cells": n_ll, "total_cells": len(cells) + n_ll,
          "bet_cells_pre_registered_AU": int(sum(1 for c in cells if c["country"] == "AU" and not c["exploratory"])),
