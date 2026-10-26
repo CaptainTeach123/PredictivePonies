@@ -1,19 +1,43 @@
-"""Adversarial verification of the "cross_country" claim:
+"""Adversarial verification of the "cross_country" LAY value-rule claim:
 
-    US WIN strict markets (every runner traded pre-off, one winner), lay 1 unit of
-    backer's stake at BSP on every runner with ltp_pre >= 50:
-    n 63982, ROI on stake +15.43% after 5% commission, SE 0.0375, halves 0.1678/0.1438.
+    US WIN strict markets (every runner traded pre-off, one winner): lay 1 unit of
+    backer's stake at ltp_pre when p_model * ltp_pre - 1 <= -0.10 and ltp_pre <= 50,
+    p_model = walk-forward power recalibration of the proportional market probability.
+    Claimed: n 21283, +21.59% of stake after 5% commission, SE 0.0239 (z = 9), halves
+    0.1989/0.2361, BH survivor of 192 lay cells; 95% of the bets sit in markets whose
+    LTP book is > 1.05 (median 1.145), median BSP/ltp_pre 1.14, and the SAME lays
+    settled at BSP return +3.6% (SE 3.8%, n 21262) = nothing, i.e. the ltp_pre result
+    is a stale-last-trade artefact and not executable.
 
-    python scripts/bf_verify_cross_country_0.py [--countries US,GB,...] [--boot 400]
+    python scripts/bf_verify_cross_country_0.py [--countries US] [--end YYYY-MM-DD] [--burn-in 3]
 
-Reproduces the cell from the parquet with the same filters as scripts/bf_cross_country.py,
-then probes it: duplicate markets per race, rows vs field_size, dead heats, the BSP
-distribution (1000 ceiling, BSP < 50 stale-LTP cases), the lay settled with a FIXED
-LIABILITY per bet (the only form an SP lay can take on Betfair: MARKET_ON_CLOSE lay
-orders carry a liability, not a backer's stake), SP lays with a max-odds limit,
-cluster-bootstrap SEs by market and by race day, year and ltp_pre/BSP sub-bands,
-largest single-bet contributions, and the same rule extended to the 'thin' markets.
-Prints JSON lines only; never prints horse names.
+The data pipeline is imported unchanged from scripts/bf_cross_country.py (dedupe,
+settled WIN, one winner, every runner traded, walk-forward beta), so the reproduction
+is exact.  Then, under the leakage / data-quality lens:
+
+  * data quality of the selected markets: parallel WIN markets per event, rows vs
+    field_size, dead heats, 1000-ceiling prices, BSP coverage, venue and year
+    concentration (the original's harness regex finds no US harness; the venues do);
+  * the structure of the selection: how many markets, whether whole fields are laid,
+    the LTP book of the selected markets, and a MODEL-FREE rule "lay every runner
+    <= 50 in markets whose sum(1/ltp_pre) >= 1/0.9" (same bets?);
+  * expected lay ROI at ltp_pre if the proportional (stale-book) probabilities were
+    right, if BSP were the truth, and if p_model were right, vs observed;
+  * in-play-leak test: a leak would make WINNERS' ltp_pre much shorter than their BSP
+    (BSP/ltp_pre >> 1 for winners vs losers); stale-short longshot trades do the
+    opposite (losers drift out more than winners);
+  * honest uncertainty: SEs clustered by market and by race day, both overall and
+    per half, for the ltp_pre lay and the BSP lay;
+  * executability: the same lays at BSP (backer's stake 1, and fixed liability 1 as an
+    SP lay really works), by BSP band (is the +3.6% the known US 50+ BSP over-betting?),
+    a limit lay at ltp_pre that is matched only when the price at the off is at or
+    below it (BSP <= ltp_pre), lay at max(ltp_pre, BSP), lay at the book-normalised
+    price ltp_pre * book, lay at ltp_t30 where it exists, and the baselines (lay every
+    scored runner <= 50 at BSP; lay every runner at ltp_pre in markets with a book
+    within 3% of 100%);
+  * calendar years.
+
+Prints JSON lines with summary numbers only; never prints horse names.
 """
 
 from __future__ import annotations
@@ -29,272 +53,335 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-SPLIT_DIR = HERE.parent / "data" / "raw" / "betfair" / "split"
-COMMISSIONS = (0.0, 0.05, 0.08)
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
+import bf_cross_country as orig  # noqa: E402  (imported, not edited)
 
-
-def _json_default(o):
-    if isinstance(o, (np.floating, float)):
-        return None if math.isnan(o) else round(float(o), 4)
-    if isinstance(o, np.integer):
-        return int(o)
-    if isinstance(o, np.bool_):
-        return bool(o)
-    if isinstance(o, pd.Timestamp):
-        return str(o.date())
-    raise TypeError(str(type(o)))
+CLAIM = {"bets": 21283, "lay_roi_c5": 0.2159, "se": 0.0239, "halves": [0.1989, 0.2361],
+         "bsp_lay_roi_c5": 0.0358, "bsp_se": 0.0381, "bsp_bets": 21262,
+         "share_book_over_1.05": 0.952, "median_bsp_over_ltp_pre": 1.14}
+BSP_BANDS = [1.0, 5.0, 10.0, 25.0, 50.0, 1e9]
+BSP_LABELS = ["1-5", "5-10", "10-25", "25-50", "50+"]
+HARNESS_RE = r"\b(?:Pace|Trot|Pacing|Trotting|Harness)\b"
 
 
 def out(obj) -> None:
-    print(json.dumps(obj, default=_json_default), flush=True)
+    print(json.dumps(obj, default=orig._json_default), flush=True)
 
 
-def r4(x):
-    x = float(x)
-    return None if math.isnan(x) else round(x, 4)
+r4 = orig.r4
 
 
-def mean_se(x):
-    x = np.asarray(x, dtype=float)
-    x = x[~np.isnan(x)]
-    if len(x) < 2:
-        return (float(x.mean()) if len(x) else float("nan")), float("nan")
-    return float(x.mean()), float(x.std(ddof=1) / math.sqrt(len(x)))
+def cluster_se(r: np.ndarray, groups: np.ndarray) -> float:
+    """Cluster-robust SE of the mean of r with clusters ``groups`` (G/(G-1) small-sample factor)."""
+    r = np.asarray(r, dtype=float)
+    n = len(r)
+    if n < 2:
+        return float("nan")
+    codes, uniq = pd.factorize(groups)
+    g = len(uniq)
+    if g < 2:
+        return float("nan")
+    sums = np.bincount(codes, weights=r - r.mean(), minlength=g)
+    return math.sqrt(float((sums ** 2).sum()) * g / (g - 1)) / n
 
 
-def lay_stake_returns(price, won, c):
-    """Lay 1 unit backer's stake: +1-c when the runner loses, -(price-1) when it wins."""
-    price = np.asarray(price, dtype=float)
-    return np.where(won, -(price - 1.0), 1.0 - c)
+def summarise(r: np.ndarray, first: np.ndarray, mk: np.ndarray, day: np.ndarray, label: str) -> dict:
+    r = np.asarray(r, dtype=float)
+    n = len(r)
+    res = {"label": label, "bets": int(n)}
+    if n < 2:
+        res["roi"] = r4(r.mean()) if n else None
+        return res
+    m = float(r.mean())
+    se = float(r.std(ddof=1) / math.sqrt(n))
+    se_m = cluster_se(r, mk)
+    se_d = cluster_se(r, day)
+    res.update({"roi": r4(m), "se_iid": r4(se), "se_market": r4(se_m), "se_day": r4(se_d),
+                "z_iid": r4(m / se) if se else None, "z_day": r4(m / se_d) if se_d and not math.isnan(se_d) else None})
+    halves = []
+    for mask in (first, ~first):
+        h = r[mask]
+        if len(h) < 2:
+            halves.append({"bets": int(len(h)), "roi": r4(h.mean()) if len(h) else None})
+            continue
+        hm = float(h.mean())
+        hs = float(h.std(ddof=1) / math.sqrt(len(h)))
+        hd = cluster_se(h, day[mask])
+        halves.append({"bets": int(len(h)), "roi": r4(hm), "se_iid": r4(hs), "se_day": r4(hd),
+                       "z_iid": r4(hm / hs) if hs else None, "z_day": r4(hm / hd) if hd and not math.isnan(hd) else None})
+    res["halves"] = halves
+    res["positive_both_halves_iid"] = bool(all(h.get("z_iid") is not None and h["z_iid"] > 2 for h in halves))
+    res["positive_both_halves_day"] = bool(all(h.get("z_day") is not None and h["z_day"] > 2 for h in halves))
+    return res
 
 
-def lay_liab_returns(price, won, c):
-    """Lay with 1 unit of LIABILITY (backer's stake = 1/(price-1)): +(1-c)/(price-1) on a loser, -1 on a winner."""
+def lay_liab_returns(price: np.ndarray, won: np.ndarray, c: float) -> np.ndarray:
+    """Lay with 1 unit of LIABILITY (backer's stake 1/(price-1)): +(1-c)/(price-1) on a loser, -1 on a winner."""
     price = np.asarray(price, dtype=float)
     return np.where(won, -1.0, (1.0 - c) / (price - 1.0))
 
 
-def summarise(r, first, label):
-    m, s = mean_se(r)
-    h = [mean_se(r[first]), mean_se(r[~first])]
-    return {"cell": label, "bets": int(len(r)), "roi": r4(m), "se": r4(s), "z": r4(m / s) if s else None,
-            "halves_roi": [r4(h[0][0]), r4(h[1][0])], "halves_se": [r4(h[0][1]), r4(h[1][1])],
-            "halves_bets": [int(first.sum()), int((~first).sum())],
-            "both_halves_gt_2se": bool(all(s_ and m_ / s_ > 2 for m_, s_ in h))}
-
-
-def cluster_boot(r, groups, reps, rng):
-    """Bootstrap the mean of r resampling whole clusters (groups = integer codes)."""
-    codes, uniq = pd.factorize(groups)
-    k = len(uniq)
-    sums = np.bincount(codes, weights=r, minlength=k)
-    cnts = np.bincount(codes, minlength=k).astype(float)
-    means = np.empty(reps)
-    for i in range(reps):
-        w = rng.multinomial(k, np.full(k, 1.0 / k))
-        means[i] = (w * sums).sum() / (w * cnts).sum()
-    return float(means.std(ddof=1)), float(np.quantile(means, 0.025)), float(np.quantile(means, 0.975))
-
-
-def load(code):
-    cols = ["market_id", "event_id", "venue", "market_name", "start", "date", "field_size",
-            "selection_id", "ltp_pre", "ltp_t30", "bsp", "won", "market_type", "n_winners", "dead_heat_share"]
-    df = pd.read_parquet(SPLIT_DIR / f"{code.lower()}_win.parquet", columns=cols)
-    n_raw = len(df)
-    df = df.drop_duplicates(["market_id", "selection_id"])
-    df = df[(df["market_type"] == "WIN") & df["won"].notna()].copy()
-    traded = df["ltp_pre"].notna() & (df["ltp_pre"] > 1)
-    mk = df["market_id"]
-    all_traded = traded.groupby(mk).transform("min").astype(bool)
-    wins = df.groupby("market_id")["won"].transform("sum")
-    df["all_traded"] = all_traded
-    df["wins"] = wins
-    df["traded"] = traded
-    return df, n_raw
-
-
-def analyse(code, boot_reps, rng):
+def analyse(code: str, end: str | None, burn_in: int) -> dict:
     t0 = time.time()
-    df, n_raw = load(code)
-    # ---- data-quality checks on the settled WIN markets
-    per_mk = df.groupby("market_id").agg(rows=("selection_id", "size"), field=("field_size", "first"),
-                                         event=("event_id", "first"), start=("start", "first"),
-                                         venue=("venue", "first"), name=("market_name", "first"),
-                                         wins=("won", "sum"), nw=("n_winners", "first"))
-    dup_event_start = per_mk.groupby(["event", "start"]).size()
-    dup_venue_start = per_mk.groupby(["venue", "start", "name"]).size()
-    dq = {"section": "data_quality", "country": code, "rows_raw": int(n_raw), "rows_settled_win": int(len(df)),
-          "markets": int(len(per_mk)),
-          "markets_rows_ne_field_size": int((per_mk["rows"] != per_mk["field"]).sum()),
-          "markets_sharing_event_and_start": int((dup_event_start > 1).sum()),
-          "markets_sharing_venue_start_name": int((dup_venue_start > 1).sum()),
-          "dead_heat_markets": int((per_mk["wins"] > 1).sum()),
-          "markets_n_winners_ne_1": int((per_mk["nw"] != 1).sum()),
-          "share_runners_traded_pre_off": r4(df["traded"].mean()),
-          "share_markets_all_traded": r4(df.drop_duplicates("market_id")["all_traded"].mean())}
-    out(dq)
+    df, thin, info = orig.load_country(code, end)
+    out({"section": "data", "country": code, **{k: info[k] for k in ("markets_settled", "runners", "markets_used", "runners_used",
+                                                                       "dead_heat_markets", "thin_markets", "bsp_coverage_used",
+                                                                       "t30_runner_coverage_used", "share_markets_harness")}})
+    p_model, fits = orig.walk_forward_power(df, burn_in)
+    lp = df["ltp_pre"].to_numpy(dtype=float)
+    bsp = df["bsp"].to_numpy(dtype=float)
+    okb = np.isfinite(bsp) & (bsp > 1)
+    won = df["won_b"].to_numpy()
+    book = df["book"].to_numpy(dtype=float)
+    p_prop = df["p_prop"].to_numpy(dtype=float)
+    market = df["market_id"].to_numpy()
+    date = df["date"].to_numpy()
+    t30 = df["ltp_t30"].to_numpy(dtype=float)
+    has_t30 = df["has_t30"].to_numpy()
+    mid = df.drop_duplicates("market_id")["date"].median()
+    first = (df["date"] < mid).to_numpy()
+    scored = ~np.isnan(p_model) & (lp <= orig.VALUE_MAX_PRICE)
+    edge = np.where(scored, p_model * lp - 1.0, np.nan)
+    sel = scored & (edge <= -orig.LAY_MARGIN)
+    n_sel = int(sel.sum())
+    out({"section": "walk_forward", "country": code, "months_fitted": len(fits), "beta_first": fits[0]["beta"] if fits else None,
+         "beta_last": fits[-1]["beta"] if fits else None, "beta_median": r4(np.median([f["beta"] for f in fits])) if fits else None,
+         "scored_runners_le_50": int(scored.sum()), "selected": n_sel, "mid_date": mid})
 
-    strict = df[(df["wins"] == 1) & df["all_traded"]].copy()
-    thin = df[(df["wins"] == 1) & ~df["all_traded"] & df["traded"]].copy()
-    mid = strict.drop_duplicates("market_id")["date"].median()
-    for name, d in (("strict", strict), ("thin", thin)):
-        d.sort_values(["start", "market_id", "ltp_pre", "selection_id"], inplace=True)
-        d.reset_index(drop=True, inplace=True)
+    # ---------------------------------------------------------------- 1. reproduction
+    l5 = orig.lay_returns(lp, won, 0.05)
+    rep = {"bets": n_sel}
+    for c in orig.COMMISSIONS:
+        rep[f"lay_roi_c{int(c * 100)}"] = r4(orig.lay_returns(lp[sel], won[sel], c).mean())
+    r = l5[sel]
+    rep["se"] = r4(r.std(ddof=1) / math.sqrt(n_sel))
+    rep["halves"] = [r4(r[first[sel]].mean()), r4(r[~first[sel]].mean())]
+    sb = sel & okb
+    rb = orig.lay_returns(bsp[sb], won[sb], 0.05)
+    rep["bsp_bets"] = int(sb.sum())
+    rep["bsp_lay_roi_c5"] = r4(rb.mean())
+    rep["bsp_se"] = r4(rb.std(ddof=1) / math.sqrt(len(rb)))
+    rep["share_book_over_1.05"] = r4((book[sel] > 1.05).mean())
+    rep["median_book"] = r4(np.median(book[sel]))
+    rep["median_bsp_over_ltp_pre"] = r4(np.median(bsp[sb] / lp[sb]))
+    rep["claim"] = CLAIM
+    rep["matches_claim"] = bool(abs(rep["lay_roi_c5"] - CLAIM["lay_roi_c5"]) < 0.002 and rep["bets"] == CLAIM["bets"]
+                                and abs(rep["bsp_lay_roi_c5"] - CLAIM["bsp_lay_roi_c5"]) < 0.002)
+    out({"section": "reproduction", "country": code, **rep})
 
-    def cell_block(d, label):
-        sel = d[d["ltp_pre"] >= 50.0]
-        okb = sel["bsp"].notna() & (sel["bsp"] > 1)
-        sel = sel[okb]
-        won = sel["won"].to_numpy() == 1
-        bsp = sel["bsp"].to_numpy(dtype=float)
-        lp = sel["ltp_pre"].to_numpy(dtype=float)
-        first = (sel["date"] < mid).to_numpy()
-        res = {"section": "lay50_bsp", "country": code, "set": label, "bets": int(len(sel)),
-               "markets": int(sel["market_id"].nunique()), "strike": r4(won.mean()),
-               "mean_inv_bsp": r4((1.0 / bsp).mean()), "mean_inv_ltp_pre": r4((1.0 / lp).mean()),
-               "sum_bsp_won_over_n": r4((bsp * won).mean()), "sum_ltp_won_over_n": r4((lp * won).mean()),
-               "bsp_quantiles_q10_q50_q90_q99": [r4(np.quantile(bsp, q)) for q in (0.1, 0.5, 0.9, 0.99)],
-               "share_bsp_ge_1000": r4((bsp >= 1000).mean()), "share_bsp_ge_500": r4((bsp >= 500).mean()),
-               "share_bsp_lt_50": r4((bsp < 50).mean()), "share_bsp_lt_25": r4((bsp < 25).mean()),
-               "median_bsp_over_ltp": r4(np.median(bsp / lp)), "mean_liability_bsp": r4((bsp - 1).mean()),
-               "winners": int(won.sum()), "winners_mean_bsp": r4(bsp[won].mean()) if won.any() else None,
-               "winners_median_bsp": r4(np.median(bsp[won])) if won.any() else None,
-               "winners_mean_ltp_pre": r4(lp[won].mean()) if won.any() else None}
-        for c in COMMISSIONS:
-            res[f"lay_stake_roi_c{int(c*100)}"] = r4(lay_stake_returns(bsp, won, c).mean())
-        for c in COMMISSIONS:
-            res[f"back_bsp_roi_c{int(c*100)}"] = r4(np.where(won, (bsp - 1) * (1 - c), -1.0).mean())
-        r5 = lay_stake_returns(bsp, won, 0.05)
-        res["stake"] = summarise(r5, first, "lay 1u stake @BSP c5")
-        # the same bets laid at ltp_pre (the last trade)
-        rl = lay_stake_returns(lp, won, 0.05)
-        res["stake_at_ltp_pre"] = summarise(rl, first, "lay 1u stake @ltp_pre c5")
-        # fixed LIABILITY per bet (Betfair SP lay orders are liability-based)
-        q5 = lay_liab_returns(bsp, won, 0.05)
-        res["liability"] = summarise(q5, first, "lay 1u liability @BSP c5 (per-bet)")
-        res["liability_aggregate_ratio"] = r4(r5.sum() / (bsp - 1).sum())
-        # SP lay with a max-odds limit L: matched only if BSP <= L (LIMIT_ON_CLOSE lay)
-        lim = {}
-        for L in (100.0, 200.0, 500.0, 999.0):
-            m = bsp <= L
-            if m.sum() > 1:
-                s_ = summarise(r5[m], first[m], f"stake, BSP<={L:g}")
-                q_ = summarise(q5[m], first[m], f"liability, BSP<={L:g}")
-                lim[f"max_odds_{L:g}"] = {"bets": int(m.sum()), "stake_roi": s_["roi"], "stake_se": s_["se"],
-                                         "stake_halves": s_["halves_roi"], "liab_roi": q_["roi"], "liab_se": q_["se"],
-                                         "liab_halves": q_["halves_roi"]}
-        res["max_odds_limits"] = lim
-        # cluster bootstrap SEs
-        if len(sel) > 100 and boot_reps:
-            se_mk, lo_mk, hi_mk = cluster_boot(r5, sel["market_id"].to_numpy(), boot_reps, rng)
-            se_day, lo_day, hi_day = cluster_boot(r5, sel["date"].astype(str).to_numpy(), boot_reps, rng)
-            res["boot_se_by_market"] = [r4(se_mk), r4(lo_mk), r4(hi_mk)]
-            res["boot_se_by_race_day"] = [r4(se_day), r4(lo_day), r4(hi_day)]
-            qse_mk = cluster_boot(q5, sel["market_id"].to_numpy(), boot_reps, rng)
-            qse_day = cluster_boot(q5, sel["date"].astype(str).to_numpy(), boot_reps, rng)
-            res["liab_boot_se_by_market"] = [r4(v) for v in qse_mk]
-            res["liab_boot_se_by_race_day"] = [r4(v) for v in qse_day]
-        # by year
-        yr = sel["date"].dt.year.to_numpy()
-        res["by_year"] = {}
-        for y in sorted(set(yr)):
-            m = yr == y
-            a, b = mean_se(r5[m])
-            c_, d_ = mean_se(q5[m])
-            res["by_year"][int(y)] = {"bets": int(m.sum()), "stake_roi": r4(a), "stake_se": r4(b),
-                                      "liab_roi": r4(c_), "liab_se": r4(d_), "strike": r4(won[m].mean())}
-        # by ltp_pre sub-band (selection known pre-off)
-        res["by_ltp_band"] = {}
-        for lo, hi in ((50, 100), (100, 200), (200, 500), (500, 1000), (1000, 1e9)):
-            m = (lp >= lo) & (lp < hi)
-            if m.sum() > 1:
-                a, b = mean_se(r5[m])
-                c_, d_ = mean_se(q5[m])
-                res["by_ltp_band"][f"{lo:g}-{hi:g}" if hi < 1e9 else "1000"] = {
-                    "bets": int(m.sum()), "strike": r4(won[m].mean()), "mean_inv_bsp": r4((1 / bsp[m]).mean()),
-                    "stake_roi": r4(a), "stake_se": r4(b), "liab_roi": r4(c_), "liab_se": r4(d_),
-                    "median_bsp": r4(np.median(bsp[m]))}
-        # by BSP band (NOT known pre-off: diagnostic of where the stake return comes from)
-        res["by_bsp_band_diagnostic"] = {}
-        for lo, hi in ((1, 25), (25, 50), (50, 100), (100, 200), (200, 500), (500, 1001)):
-            m = (bsp >= lo) & (bsp < hi)
-            if m.sum() > 1:
-                a, b = mean_se(r5[m])
-                res["by_bsp_band_diagnostic"][f"{lo:g}-{hi:g}"] = {
-                    "bets": int(m.sum()), "strike": r4(won[m].mean()), "mean_inv_bsp": r4((1 / bsp[m]).mean()),
-                    "stake_roi": r4(a), "stake_se": r4(b), "share_of_total_stake_profit": r4(r5[m].sum() / r5.sum()) if r5.sum() else None}
-        # influence: largest single winner liabilities as a share of n (each is a hit to ROI)
-        wl = np.sort((bsp[won] - 1.0))[::-1]
-        res["top10_winner_liabilities_roi_hit_each"] = [r4(v / len(sel)) for v in wl[:10]]
-        res["stake_roi_c5_if_top10_winners_excluded"] = r4((r5.sum() + wl[:10].sum()) / (len(sel) - 10))
-        # how much of the loss-of-backers is at ltp_pre vs BSP for the same bets
-        res["winners_bsp_over_ltp_pre_median"] = r4(np.median(bsp[won] / lp[won])) if won.any() else None
-        res["losers_bsp_over_ltp_pre_median"] = r4(np.median(bsp[~won] / lp[~won])) if (~won).any() else None
-        # venue concentration of the stake profit
-        vs = pd.DataFrame({"v": sel["venue"].to_numpy(), "r": r5}).groupby("v")["r"].agg(["size", "sum", "mean"])
-        vs = vs.sort_values("sum", ascending=False)
-        res["venues"] = int(len(vs))
-        res["top5_venues_share_of_profit"] = r4(vs["sum"].head(5).sum() / r5.sum()) if r5.sum() else None
-        res["share_venues_positive"] = r4((vs["mean"] > 0).mean())
-        return res, sel
+    # ---------------------------------------------------------------- 2. data quality of the selected markets
+    extra = pd.read_parquet(orig.SPLIT_DIR / f"{code.lower()}_win.parquet",
+                            columns=["market_id", "selection_id", "event_id", "venue", "market_name", "start", "market_type", "won"])
+    extra = extra.drop_duplicates(["market_id", "selection_id"])
+    extra = extra[(extra["market_type"] == "WIN") & extra["won"].notna()]
+    emk = extra.drop_duplicates("market_id").set_index("market_id")
+    per_event_start = emk.groupby(["event_id", "start"]).size()
+    dup_keys = set(per_event_start[per_event_start > 1].index)
+    emk["parallel_win_market"] = [(e, s) in dup_keys for e, s in zip(emk["event_id"], emk["start"])]
+    sel_mk = pd.unique(market[sel])
+    all_mk = pd.unique(market)
+    rows_per_mk = df.groupby("market_id").size()
+    fs = df.drop_duplicates("market_id").set_index("market_id")["field_size"]
+    sel_rows = df[np.isin(market, sel_mk)]
+    yrs = pd.DatetimeIndex(date[sel]).year
+    ven = emk["venue"].reindex(sel_mk)
+    harness_name = emk["market_name"].fillna("").str.contains(HARNESS_RE)
+    top_ven = ven.value_counts().head(12)
+    dq = {"selected_markets": int(len(sel_mk)), "all_strict_markets": int(len(all_mk)),
+          "share_selected_markets_with_parallel_win_market_same_event_start": r4(emk["parallel_win_market"].reindex(sel_mk).mean()),
+          "share_all_markets_with_parallel_win_market": r4(emk["parallel_win_market"].mean()),
+          "share_selected_markets_rows_eq_field_size": r4((rows_per_mk.reindex(sel_mk) == fs.reindex(sel_mk)).mean()),
+          "share_all_markets_rows_eq_field_size": r4((rows_per_mk.reindex(all_mk) == fs.reindex(all_mk)).mean()),
+          "dead_heat_markets_dropped": info["dead_heat_markets"],
+          "share_runners_at_1000_in_selected_markets": r4((sel_rows["ltp_pre"] >= 1000).mean()),
+          "share_selected_bets_without_bsp": r4((~okb[sel]).mean()),
+          "share_selected_markets_any_t30": r4(sel_rows.groupby("market_id")["has_t30"].max().mean()),
+          "share_all_markets_any_t30": r4(df.groupby("market_id")["has_t30"].max().mean()),
+          "selected_bets_by_year": {str(k): int(v) for k, v in pd.Series(yrs).value_counts().sort_index().items()},
+          "all_strict_markets_by_year": {str(k): int(v) for k, v in pd.Series(pd.DatetimeIndex(df.drop_duplicates("market_id")["date"]).year).value_counts().sort_index().items()},
+          "share_selected_markets_harness_by_name": r4(harness_name.reindex(sel_mk).mean()),
+          "top_venues_selected_markets": {str(k): int(v) for k, v in top_ven.items()},
+          "share_selected_markets_in_top12_venues": r4(top_ven.sum() / len(sel_mk)),
+          "distinct_venues_selected": int(ven.nunique()), "distinct_venues_all": int(emk["venue"].nunique()),
+          "selected_market_median_field": r4(fs.reindex(sel_mk).median()), "all_market_median_field": r4(fs.median())}
+    out({"section": "data_quality", "country": code, **dq})
 
-    res_strict, sel_strict = cell_block(strict, "strict (claim)")
-    out(res_strict)
-    # dead heats included: markets with >1 winner, settled with the dead-heat share
-    # (lay of 1u stake at price P with share s: the layer pays s*P-1 on a (part-)winner)
-    dh = df[df["all_traded"] & (df["wins"] >= 1)].copy()
-    sel = dh[(dh["ltp_pre"] >= 50.0) & dh["bsp"].notna() & (dh["bsp"] > 1)]
-    bsp = sel["bsp"].to_numpy(dtype=float)
-    share = sel["dead_heat_share"].fillna(0.0).to_numpy(dtype=float)
-    won = share > 0
-    r5 = np.where(won, -(share * bsp - 1.0), 0.95)
-    first = (sel["date"] < mid).to_numpy()
-    out({"section": "lay50_bsp_with_dead_heats", "country": code, "bets": int(len(sel)),
-         "dead_heat_part_winners": int((won & (share < 1)).sum()),
-         **summarise(r5, first, "lay 1u stake @BSP c5, dead heats settled")})
-    # selection on the 30-minute-out price instead (present for a liquid minority of runners)
-    sel = strict[(strict["ltp_t30"] >= 50.0) & strict["bsp"].notna() & (strict["bsp"] > 1)]
-    if len(sel) > 100:
-        bsp = sel["bsp"].to_numpy(dtype=float)
-        won = sel["won"].to_numpy() == 1
-        first = (sel["date"] < mid).to_numpy()
-        out({"section": "lay50_bsp_selected_on_ltp_t30", "country": code, "bets": int(len(sel)),
-             "share_of_strict_50plus_runners_with_t30": r4(strict.loc[strict["ltp_pre"] >= 50, "ltp_t30"].notna().mean()),
-             "strike": r4(won.mean()), "mean_inv_bsp": r4((1 / bsp).mean()),
-             "stake": summarise(lay_stake_returns(bsp, won, 0.05), first, "lay 1u stake @BSP c5 (ltp_t30>=50)"),
-             "liability": summarise(lay_liab_returns(bsp, won, 0.05), first, "lay 1u liability @BSP c5 (ltp_t30>=50)")})
-    # ltp_pre >= 50 runners split by whether the runner had traded 30 min out (liquidity proxy)
-    s50 = strict[(strict["ltp_pre"] >= 50.0) & strict["bsp"].notna() & (strict["bsp"] > 1)]
-    has = (s50["ltp_t30"].notna() & (s50["ltp_t30"] > 1)).to_numpy()
-    for lab, m in (("had_t30_trade", has), ("no_t30_trade", ~has)):
-        sub = s50[m]
-        if len(sub) > 100:
-            bsp = sub["bsp"].to_numpy(dtype=float)
-            won = sub["won"].to_numpy() == 1
-            first = (sub["date"] < mid).to_numpy()
-            out({"section": "lay50_bsp_by_t30_liquidity", "country": code, "group": lab, "bets": int(len(sub)),
-                 "strike": r4(won.mean()), "mean_inv_bsp": r4((1 / bsp).mean()),
-                 "stake": summarise(lay_stake_returns(bsp, won, 0.05), first, "stake"),
-                 "liability": summarise(lay_liab_returns(bsp, won, 0.05), first, "liability")})
-    if thin["market_id"].nunique() >= 200:
-        res_thin, sel_thin = cell_block(thin, "thin (markets with an untraded runner)")
-        out(res_thin)
-        both = pd.concat([strict, thin], ignore_index=True)
-        res_all, _ = cell_block(both, "strict+thin (rule applied to every settled single-winner market)")
-        out(res_all)
-    out({"section": "timing", "country": code, "seconds": round(time.time() - t0, 1), "mid_date": mid})
+    # ---------------------------------------------------------------- 3. selection structure and a model-free twin
+    n_le50 = pd.Series(lp <= orig.VALUE_MAX_PRICE).groupby(market).transform("sum").to_numpy()
+    n_sel_mk = pd.Series(sel.astype(int)).groupby(market).transform("sum").to_numpy()
+    whole = sel & (n_sel_mk == n_le50)
+    bk_sel = book[sel]
+    q = np.quantile(bk_sel, [0.1, 0.25, 0.5, 0.75, 0.9])
+    # how much of the edge is just 1/book - 1 ?
+    x = 1.0 / book[scored] - 1.0
+    y = edge[scored]
+    r2 = float(np.corrcoef(x, y)[0, 1] ** 2)
+    struct = {"selected_bets": n_sel, "selected_markets": int(len(sel_mk)),
+              "bets_per_selected_market_mean": r4(n_sel / len(sel_mk)),
+              "share_bets_where_whole_field_le_50_is_laid": r4(whole[sel].mean()),
+              "book_of_selected_bets": {"q10": r4(q[0]), "q25": r4(q[1]), "median": r4(q[2]), "q75": r4(q[3]), "q90": r4(q[4]),
+                                        "share_gt_1.05": r4((bk_sel > 1.05).mean()), "share_ge_1.111": r4((bk_sel >= 1 / 0.9).mean()),
+                                        "share_gt_1.20": r4((bk_sel > 1.2).mean())},
+              "r2_of_edge_on_1_over_book_minus_1_scored": r4(r2)}
+    free_rows = []
+    for thr in (1.05, 1.0 / 0.9, 1.15):
+        fsel = scored & (book >= thr)
+        if fsel.sum() < 2:
+            continue
+        inter = int((fsel & sel).sum())
+        a = summarise(l5[fsel], first[fsel], market[fsel], date[fsel], f"model-free: lay all <=50 in LTP book >= {thr:.3f}")
+        fb = fsel & okb
+        b = summarise(orig.lay_returns(bsp[fb], won[fb], 0.05), first[fb], market[fb], date[fb], "same at BSP")
+        free_rows.append({"threshold": r4(thr), "bets": a["bets"], "lay_roi_c5": a["roi"], "se_iid": a["se_iid"], "se_day": a["se_day"],
+                          "halves": [h.get("roi") for h in a["halves"]],
+                          "overlap_with_selected": inter, "jaccard": r4(inter / (fsel.sum() + n_sel - inter)),
+                          "bsp_lay_roi_c5": b.get("roi"), "bsp_se_day": b.get("se_day")})
+    struct["model_free_rows"] = free_rows
+    out({"section": "selection_structure", "country": code, **struct})
+
+    # ---------------------------------------------------------------- 4. expected vs observed, and the in-play-leak test
+    p_bsp = np.full(len(df), np.nan)
+    p_bsp[okb] = 1.0 / bsp[okb]
+    bsp_full = pd.Series(okb).groupby(market).transform("min").to_numpy().astype(bool)
+    tot = pd.Series(np.where(bsp_full, p_bsp, 0.0)).groupby(market).transform("sum").to_numpy()
+    with np.errstate(divide="ignore", invalid="ignore"):
+        p_bsp = np.where(bsp_full, p_bsp / np.where(tot > 0, tot, np.nan), np.nan)
+
+    def e_lay(p, price):  # expected lay return (stake 1, 5%) at `price` if the win probability is p
+        return 0.95 + 0.05 * p - p * price
+
+    ratio = np.where(okb, bsp / lp, np.nan)
+    rs, ws, os_ = ratio[sel], won[sel], okb[sel]
+    exp = {"observed_lay_roi_c5_at_ltp_pre": rep["lay_roi_c5"],
+           "expected_if_prop_stale_book_calibrated": r4(e_lay(p_prop[sel], lp[sel]).mean()),
+           "expected_if_p_model_right": r4(e_lay(p_model[sel], lp[sel]).mean()),
+           "expected_if_bsp_is_truth": r4(np.nanmean(e_lay(p_bsp[sel], lp[sel]))),
+           "share_selected_with_full_bsp_market": r4(bsp_full[sel].mean()),
+           "strike_observed": r4(won[sel].mean()), "mean_1_over_ltp_pre": r4((1.0 / lp[sel]).mean()),
+           "mean_p_prop": r4(p_prop[sel].mean()), "mean_p_model": r4(p_model[sel].mean()),
+           "mean_p_bsp_normalised": r4(np.nanmean(p_bsp[sel])), "mean_1_over_bsp": r4(np.nanmean(1.0 / bsp[sb])),
+           "median_bsp_over_ltp_pre_winners": r4(np.nanmedian(rs[os_ & ws])),
+           "median_bsp_over_ltp_pre_losers": r4(np.nanmedian(rs[os_ & ~ws])),
+           "q90_bsp_over_ltp_pre_winners": r4(np.nanquantile(rs[os_ & ws], 0.9)),
+           "q90_bsp_over_ltp_pre_losers": r4(np.nanquantile(rs[os_ & ~ws], 0.9)),
+           "share_winners_ltp_pre_shorter_than_half_bsp": r4(np.mean(rs[os_ & ws] > 2.0)),
+           "share_losers_ltp_pre_shorter_than_half_bsp": r4(np.mean(rs[os_ & ~ws] > 2.0)),
+           "share_winners_ltp_pre_le_1.5_and_bsp_ge_5": int(((lp[sel] <= 1.5) & (bsp[sel] >= 5) & ws).sum()),
+           "all_strict_median_ratio_winners": r4(np.nanmedian(ratio[okb & won])),
+           "all_strict_median_ratio_losers": r4(np.nanmedian(ratio[okb & ~won])),
+           "reading": "in-play leakage would put the WINNERS' last trade far below BSP (winners' ratio >> losers'); "
+                      "stale-short longshot trades put the LOSERS' last trade below BSP (losers' ratio > winners')"}
+    # winners' liability: where does the ltp_pre lay profit come from?
+    lw = lp[sel & won]
+    bw = bsp[sel & won & okb]
+    exp["winners"] = {"n": int((sel & won).sum()), "mean_liability_ltp_pre": r4((lw - 1).mean()), "median_ltp_pre": r4(np.median(lw)),
+                      "mean_liability_bsp": r4((bw - 1).mean()), "median_bsp": r4(np.median(bw))}
+    if has_t30[sel].any():
+        same = np.isclose(lp, t30)
+        exp["share_selected_with_t30"] = r4(has_t30[sel].mean())
+        exp["share_ltp_pre_eq_ltp_t30_selected"] = r4(same[sel & has_t30].mean())
+        exp["share_ltp_pre_eq_ltp_t30_all_scored"] = r4(same[scored & has_t30].mean())
+    out({"section": "expected_vs_observed_and_leak_test", "country": code, **exp})
+
+    # ---------------------------------------------------------------- 5. honest uncertainty
+    a = summarise(l5[sel], first[sel], market[sel], date[sel], "lay 1u stake @ltp_pre c5")
+    b = summarise(orig.lay_returns(bsp[sb], won[sb], 0.05), first[sb], market[sb], date[sb], "same lays @BSP c5 (stake 1)")
+    out({"section": "clustered_se", "country": code, "ltp_pre": a, "bsp": b,
+         "distinct_race_days_selected": int(pd.Series(date[sel]).nunique())})
+
+    # ---------------------------------------------------------------- 6. executability
+    ex = {}
+    for c in orig.COMMISSIONS:
+        ex[f"bsp_stake1_roi_c{int(c * 100)}"] = r4(orig.lay_returns(bsp[sb], won[sb], c).mean())
+    ex["bsp_stake1"] = b
+    ql = lay_liab_returns(bsp[sb], won[sb], 0.05)
+    ex["bsp_liability1"] = summarise(ql, first[sb], market[sb], date[sb], "same lays @BSP c5, 1u LIABILITY each (SP-lay form)")
+    ex["bsp_liability1_aggregate_roi_on_liability"] = r4(orig.lay_returns(bsp[sb], won[sb], 0.05).sum() / (bsp[sb] - 1).sum())
+    ex["mean_liability_bsp_per_unit_stake"] = r4((bsp[sb] - 1).mean())
+    band = pd.cut(bsp, BSP_BANDS, right=False, labels=BSP_LABELS).astype(str)
+    rows = []
+    for lab in BSP_LABELS:
+        m = sb & (band.to_numpy() == lab)
+        if m.sum() < 2:
+            continue
+        s = summarise(orig.lay_returns(bsp[m], won[m], 0.05), first[m], market[m], date[m], f"BSP band {lab}")
+        s_l = summarise(l5[m], first[m], market[m], date[m], "ltp_pre")
+        rows.append({"bsp_band": lab, "bets": s["bets"], "bsp_lay_roi_c5": s["roi"], "se_iid": s["se_iid"], "se_day": s["se_day"],
+                     "halves": [h.get("roi") for h in s["halves"]], "ltp_pre_lay_roi_c5": s_l["roi"],
+                     "median_ltp_pre": r4(np.median(lp[m])), "median_bsp": r4(np.median(bsp[m]))})
+    ex["bsp_by_bsp_band"] = rows
+    m = sb & (bsp < 50)
+    ex["bsp_stake1_excluding_bsp_ge_50"] = summarise(orig.lay_returns(bsp[m], won[m], 0.05), first[m], market[m], date[m],
+                                                     "same lays @BSP c5, BSP < 50 only")
+    # limit lay at ltp_pre: a lay offer at L is matched only if the market trades at or below L
+    for tol, name in ((1.0, "fill_if_bsp_le_ltp_pre"), (1.05, "fill_if_bsp_le_1.05x_ltp_pre")):
+        filled = sb & (bsp <= lp * tol)
+        f = summarise(l5[filled], first[filled], market[filled], date[filled], f"limit lay @ltp_pre, {name}")
+        f["share_filled"] = r4(filled.sum() / sb.sum())
+        unf = sb & ~filled
+        f["unfilled_hypothetical_roi_c5_at_ltp_pre"] = r4(l5[unf].mean()) if unf.sum() else None
+        f["unfilled_bets"] = int(unf.sum())
+        ex[name] = f
+    worst = np.maximum(lp, np.where(okb, bsp, lp))
+    ex["lay_at_max_ltp_pre_bsp"] = summarise(orig.lay_returns(worst[sb], won[sb], 0.05), first[sb], market[sb], date[sb],
+                                             "lay at max(ltp_pre, BSP) c5")
+    norm = lp * book
+    ex["lay_at_book_normalised_ltp_pre"] = summarise(orig.lay_returns(norm[sel], won[sel], 0.05), first[sel], market[sel], date[sel],
+                                                     "lay at ltp_pre*book (LTP book forced to 100%) c5")
+    st = sel & has_t30
+    if st.sum() >= 2:
+        s30 = summarise(orig.lay_returns(t30[st], won[st], 0.05), first[st], market[st], date[st], "lay at ltp_t30 c5 (where it exists)")
+        s30["share_of_selected_with_t30"] = r4(st.sum() / n_sel)
+        s30["median_t30_over_ltp_pre"] = r4(np.median(t30[st] / lp[st]))
+        ex["lay_at_ltp_t30_conditional"] = s30
+    # baselines
+    base = scored & okb
+    bb = summarise(orig.lay_returns(bsp[base], won[base], 0.05), first[base], market[base], date[base],
+                   "BASELINE: lay every scored runner <= 50 at BSP c5")
+    ex["baseline_all_scored_at_bsp"] = {k: bb.get(k) for k in ("bets", "roi", "se_iid", "se_day")}
+    near = scored & (np.abs(book - 1.0) <= 0.03)
+    bn = summarise(l5[near], first[near], market[near], date[near], "BASELINE: lay every runner <= 50 at ltp_pre, book within 3%")
+    ex["baseline_book_within_3pct_at_ltp_pre"] = {k: bn.get(k) for k in ("bets", "roi", "se_iid", "se_day")}
+    # selected minus baseline at BSP (same source, independent samples approx.)
+    if b.get("se_day") and bb.get("se_day"):
+        d = b["roi"] - bb["roi"]
+        ex["selected_minus_baseline_at_bsp"] = {"diff": r4(d), "se_day": r4(math.hypot(b["se_day"], bb["se_day"])),
+                                                "z": r4(d / math.hypot(b["se_day"], bb["se_day"]))}
+    out({"section": "executability", "country": code, **ex})
+
+    # ---------------------------------------------------------------- 7. calendar years
+    yrs_all = pd.DatetimeIndex(date).year
+    yr_rows = []
+    for y in sorted(pd.unique(yrs_all[sel])):
+        m = sel & (yrs_all == y)
+        mb = m & okb
+        a_ = summarise(l5[m], first[m], market[m], date[m], "ltp_pre")
+        b_ = summarise(orig.lay_returns(bsp[mb], won[mb], 0.05), first[mb], market[mb], date[mb], "bsp")
+        yr_rows.append({"year": int(y), "bets": a_["bets"], "ltp_pre_lay_roi_c5": a_.get("roi"), "se_day": a_.get("se_day"),
+                        "bsp_lay_roi_c5": b_.get("roi"), "bsp_se_day": b_.get("se_day"), "median_book": r4(np.median(book[m]))})
+    out({"section": "by_year", "country": code, "rows": yr_rows})
+
+    verdict = {"country": code, "reproduced": rep["matches_claim"], "ltp_pre_lay_roi_c5": rep["lay_roi_c5"], "se_iid": a.get("se_iid"),
+               "se_day": a.get("se_day"), "bsp_lay_roi_c5": b.get("roi"), "bsp_se_iid": b.get("se_iid"), "bsp_se_day": b.get("se_day"),
+               "bsp_positive_both_halves_iid": b.get("positive_both_halves_iid"),
+               "expected_if_bsp_is_truth": exp["expected_if_bsp_is_truth"],
+               "expected_if_prop": exp["expected_if_prop_stale_book_calibrated"],
+               "limit_fill_share": ex["fill_if_bsp_le_ltp_pre"].get("share_filled"),
+               "limit_filled_roi_c5": ex["fill_if_bsp_le_ltp_pre"].get("roi"),
+               "seconds": round(time.time() - t0, 1)}
+    out({"section": "verdict", **verdict})
+    return verdict
 
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--countries", default="US,GB,IE,ZA,FR,NZ")
-    ap.add_argument("--boot", type=int, default=400)
+    ap.add_argument("--countries", default="US")
+    ap.add_argument("--end", default=None, help="use markets strictly before this date (development)")
+    ap.add_argument("--burn-in", type=int, default=3)
     a = ap.parse_args()
-    rng = np.random.default_rng(7)
-    t0 = time.time()
     for code in [c.strip().upper() for c in a.countries.split(",") if c.strip()]:
-        analyse(code, a.boot, rng)
-    out({"section": "done", "seconds": round(time.time() - t0, 1)})
+        analyse(code, a.end, a.burn_in)
     return 0
 
 

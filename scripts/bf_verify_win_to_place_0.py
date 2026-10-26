@@ -1,35 +1,25 @@
-"""Adversarial verification of experiment "win_to_place" (scripts/bf_win_to_place.py).
-
-CLAIM under test: back the PLACE at ltp_pre when ltp_pre * p_cal > 1.10 (p_cal =
-calibrated discounted-Harville place probability from the WIN market's ltp_pre);
-+10.8% ROI after 5% commission on 107,224 bets, > 2 SE in both halves, but
-negative when the same bets are settled at the place BSP.
+"""Adversarial verification of the "win_to_place" PROBABILITY claim
+(walk-forward blend of the place ltp market and the calibrated WIN-derived
+place probability beats the normalised place ltp market by 0.0102 log loss
+per race on fully priced place markets). Lens: leakage and data quality.
 
     python scripts/bf_verify_win_to_place_0.py [--dir data/raw/betfair/split] [--frac 0.1]
 
-This script imports the original pipeline unchanged (same join, lambda fit,
-calibration) so that the headline cell is reproduced exactly, then adds the
-diagnostics the original did not run, under the leakage / data-quality lens:
-
-  1. race-clustered SE (several bets per race are not independent);
-  2. the place book implied by ltp_pre in the bet's race: an under-round book
-     (sum of 1/ltp < n_winners) is a set of prices that could not have been
-     available at the same moment, i.e. direct evidence of stale quotes;
-  3. staleness marker ltp_t30 == ltp_pre (no trade in the last 30 minutes);
-  4. scratching proxy (gap in saddlecloth numbers: a removed runner means the
-     thin place market's last trade may predate the reform of the market);
-  5. model-free null "fair" probabilities (plain Harville lam=1, and
-     n_winners * p_win): does the ltp "edge" appear whatever p is used?;
-  6. where the paper profit sits as a function of ltp_pre / BSP (post-hoc
-     diagnostic, not a strategy);
-  7. winner's curse on p_cal: p_cal * BSP vs realised strike on the bets.
-Prints summary numbers only (never horse names or rows).
+Reuses the original script's loader / fitting functions unchanged (imported
+from scripts/bf_win_to_place.py) so that the reproduction is exact, then adds:
+  1. reproduction with cluster-by-date SE, median / winsorised gain, gain by year
+  2. a calibrated-market baseline (same walk-forward cubic calibrator applied to
+     the place market itself) to split the gain into "recalibration" vs "WIN info"
+  3. timing / staleness: WIN-market in-play leakage test (ltp_pre vs WIN BSP log
+     loss), no-trade-in-last-30-min rates, gain by place-book tightness, gain vs
+     the place BSP, and a model built from the 30-minute-old WIN price (ltp_t30)
+     against the fresher place ltp_pre market.
+Prints summary numbers only.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import sys
@@ -41,72 +31,73 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-_spec = importlib.util.spec_from_file_location("w2p", ROOT / "scripts" / "bf_win_to_place.py")
-w2p = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(w2p)
+sys.path.insert(0, str(ROOT / "scripts"))
+import bf_win_to_place as O  # noqa: E402
+from ponies.exotics import order_probs  # noqa: E402
 
-K = 0.1
+r4 = O.r4
+BLEND_GRID = O.BLEND_GRID
 
 
 def out(obj) -> None:
     print(json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o)), flush=True)
 
 
-def r4(x):
-    return w2p.r4(x)
-
-
-def cluster_se(ret: np.ndarray, race: np.ndarray) -> float | None:
-    """SE of the mean return with bets clustered by race."""
-    ok = ~np.isnan(ret)
-    ret, race = ret[ok], race[ok]
-    if len(ret) < 2:
-        return None
-    m = ret.mean()
-    d = pd.Series(ret - m).groupby(race).sum().to_numpy()
-    return float(math.sqrt((d ** 2).sum()) / len(ret))
-
-
-def cell(g: pd.DataFrame, mid, prob_col="p_cal", price_col="ltp_pl") -> dict:
-    """Compact bet cell: bets, ROI at 0/5/8%, per-bet SE, race-clustered SE,
-    halves, one tick worse, settled at place BSP (same decision), BSP coverage."""
-    res = {"bets": int(len(g))}
-    if len(g) < 2:
-        return res
-    for c in w2p.COMMS:
-        r = w2p.returns(g[price_col], g["placed"], g["dh"], c)
-        res[f"roi_c{int(c * 100)}"] = r4(r.mean())
-        if c == 0.05:
-            res["se"] = r4(r.std(ddof=1) / math.sqrt(len(r)))
-            res["se_race_clustered"] = r4(cluster_se(r, g["race"].to_numpy()))
-            fh = (g["date"] < mid).to_numpy()
-            res["halves_c5"] = [r4(r[fh].mean()) if fh.sum() > 1 else None, r4(r[~fh].mean()) if (~fh).sum() > 1 else None]
-            res["halves_se_c5"] = [r4(r[fh].std(ddof=1) / math.sqrt(fh.sum())) if fh.sum() > 1 else None,
-                                   r4(r[~fh].std(ddof=1) / math.sqrt((~fh).sum())) if (~fh).sum() > 1 else None]
-    res["roi_c5_one_tick_worse"] = r4(w2p.returns(w2p.one_tick_worse(g[price_col]), g["placed"], g["dh"], 0.05).mean())
-    has = (g["bsp_pl"].notna() & (g["bsp_pl"] > 1)).to_numpy()
-    res["bsp_cover"] = r4(has.mean())
-    if has.sum() > 1:
-        gb = g[has]
-        rb = w2p.returns(gb["bsp_pl"], gb["placed"], gb["dh"], 0.05)
-        res["roi_c5_settle_bsp"] = r4(rb.mean())
-        res["bsp_se"] = r4(rb.std(ddof=1) / math.sqrt(len(rb)))
-        fhb = (gb["date"] < mid).to_numpy()
-        res["bsp_halves_c5"] = [r4(rb[fhb].mean()) if fhb.sum() > 1 else None, r4(rb[~fhb].mean()) if (~fhb).sum() > 1 else None]
-        res["roi_c5_ltp_on_bsp_subset"] = r4(w2p.returns(gb[price_col], gb["placed"], gb["dh"], 0.05).mean())
-        res["roi_c5_worse_of_ltp_bsp"] = r4(w2p.returns(np.minimum(gb[price_col], gb["bsp_pl"]), gb["placed"], gb["dh"], 0.05).mean())
-        res["median_place_bsp_over_ltp"] = r4((gb["bsp_pl"] / gb["ltp_pl"]).median())
-        hw = gb["bsp_win"].notna() & (gb["bsp_win"] > 1)
-        res["median_win_bsp_over_ltp"] = r4((gb.loc[hw, "bsp_win"] / gb.loc[hw, "ltp_win"]).median()) if hw.any() else None
-        if prob_col in g:
-            res["median_p_x_bsp"] = r4((gb[prob_col] * gb["bsp_pl"]).median())
-            res["mean_p"] = r4(gb[prob_col].mean())
-            res["strike_bsp_subset"] = r4(gb["placed"].mean())
-            res["mean_1_over_bsp"] = r4((1 / gb["bsp_pl"]).mean())
-    res["strike"] = r4(g["placed"].mean())
-    res["median_price"] = r4(g[price_col].median())
-    res["races"] = int(g["race"].nunique())
+def gain_stats(ll_model: np.ndarray, ll_base: np.ndarray, dates: np.ndarray, mid) -> dict:
+    """gain = base - model per race, with plain SE, cluster-by-date SE, halves,
+    robustness (median, winsorised, top-1% share) and per-year gains."""
+    d = ll_base - ll_model
+    N = len(d)
+    if N < 2:
+        return {"races": int(N)}
+    dates = pd.DatetimeIndex(dates)
+    fh = np.asarray(dates < mid)
+    res = O.paired(ll_model, ll_base, fh)
+    s = pd.Series(d).groupby(dates.to_numpy()).sum()
+    n = pd.Series(d).groupby(dates.to_numpy()).size()
+    m = d.mean()
+    res["gain_se_cluster_date"] = r4(math.sqrt(((s - m * n) ** 2).sum()) / N)
+    res["median_gain"] = r4(np.median(d))
+    res["share_races_gain_pos"] = r4((d > 0).mean())
+    lo, hi = np.percentile(d, [1, 99])
+    res["winsor_1_99_gain"] = r4(np.clip(d, lo, hi).mean())
+    k = max(1, N // 100)
+    res["top1pct_share_of_total_gain"] = r4(np.sort(d)[-k:].sum() / d.sum()) if d.sum() != 0 else None
+    yr = dates.year.to_numpy()
+    res["gain_by_year"] = {int(y): [r4(d[yr == y].mean()), r4(d[yr == y].std(ddof=1) / math.sqrt((yr == y).sum())), int((yr == y).sum())]
+                           for y in sorted(set(yr)) if (yr == y).sum() > 1}
     return res
+
+
+def blend_grid_ll(qa: np.ndarray, qb: np.ndarray, y: np.ndarray, rc: np.ndarray) -> dict:
+    """per-race log loss of w*qa + (1-w)*qb for every w on BLEND_GRID (w on qa)."""
+    return {round(float(w), 2): O.logloss_race(w * qa + (1 - w) * qb, y, rc) for w in BLEND_GRID}
+
+
+def walk_forward_blend(ll_by_w: dict, rmonth: np.ndarray, usable: np.ndarray, min_prev=500):
+    """Monthly choice of w on all strictly earlier months (as in the original):
+    returns the per-race ll of the chosen w (NaN where no choice) and the choices."""
+    mcount = pd.Series(rmonth).value_counts()
+    msum = {w: pd.Series(v[usable]).groupby(rmonth[usable]).sum() for w, v in ll_by_w.items()}
+    chosen, wf = {}, np.full(len(rmonth), np.nan)
+    for m in sorted(set(rmonth)):
+        prev = [mm for mm in mcount.index if mm < m]
+        if sum(mcount[mm] for mm in prev) < min_prev:
+            continue
+        best = min(BLEND_GRID, key=lambda w: sum(msum[round(float(w), 2)].get(mm, 0) for mm in prev))
+        chosen[m] = round(float(best), 2)
+        sel = (rmonth == m) & usable
+        wf[sel] = ll_by_w[round(float(best), 2)][sel]
+    return wf, chosen
+
+
+def norm_probs(df: pd.DataFrame, price_col: str, race_col: str, k: pd.Series | int) -> pd.Series:
+    inv = 1 / df[price_col]
+    return inv * k / inv.groupby(df[race_col]).transform("sum")
+
+
+def race_level(df: pd.DataFrame, col: str, race_col="race") -> np.ndarray:
+    return df.drop_duplicates(race_col).set_index(race_col)[col].reindex(pd.unique(df[race_col])).to_numpy()
 
 
 def main() -> int:
@@ -117,181 +108,218 @@ def main() -> int:
     a = ap.parse_args()
     t0 = time.time()
 
-    # ---- identical pipeline to the original main() up to p_cal -----------------
-    j = w2p.load(a.dir, a.frac, a.seed)
-    P, jw, k, i, ok, nw, race = w2p.placed_set_stats(j)
+    # ------------------------------------------------------------------ original pipeline, unchanged
+    j = O.load(a.dir, a.frac, a.seed)
+    P, jw, k, i, ok, nw, race = O.placed_set_stats(j)
     months = race["month"].to_numpy()
     codes = race["harness"].to_numpy()
     months_sorted = sorted(set(months))
-    ll = w2p.grid_loglik(P, jw, k, i, ok, nw)
-    lam = w2p.fit_lambdas_walk_forward(ll, ok, months, codes, months_sorted)
+    ll = O.grid_loglik(P, jw, k, i, ok, nw)
+    lam = O.fit_lambdas_walk_forward(ll, ok, months, codes, months_sorted)
     del ll
-    j["p_fair"] = w2p.derived_place_probs(j, P, nw, lam, months, codes)
-    # null models: plain Harville (lam2 = lam3 = 1, nothing fitted) and n_winners * p_win
-    lam1 = {key: (1.0, 1.0, v[2]) for key, v in lam.items()}
-    j["p_harv1"] = w2p.derived_place_probs(j, P, nw, lam1, months, codes)
+    j["p_fair"] = O.derived_place_probs(j, P, nw, lam, months, codes)
     j = j[j["p_fair"].notna()].copy()
     j["race"] = pd.factorize(j["win_mid"])[0]
-    j["dh"] = j["n_winners"] / j["n_placed"]
-    j["p_cal"], cal_params = w2p.calibrate_walk_forward(j, "p_fair", sorted(j["month"].unique()))
-    j["p_crude"] = (j["n_winners"] * j["p_win"]).clip(upper=0.98)
+    j["p_cal"], _ = O.calibrate_walk_forward(j, "p_fair", sorted(j["month"].unique()))
     days = sorted(j["date"].unique())
     mid = days[len(days) // 2]
-
-    # saddlecloth numbers (scratching proxy) from the place parquet
-    prog = pd.read_parquet(a.dir / "au_place.parquet", columns=["market_id", "selection_id", "program"])
-    prog = prog.drop_duplicates(["market_id", "selection_id"]).rename(columns={"market_id": "pl_mid"})
-    for c in ("pl_mid", "selection_id"):
-        prog[c] = prog[c].astype(object)
-    prog["prog_num"] = pd.to_numeric(prog["program"], errors="coerce")
-    n_before = len(j)
-    j = j.merge(prog[["pl_mid", "selection_id", "prog_num"]], on=["pl_mid", "selection_id"], how="left")
-    assert len(j) == n_before, (len(j), n_before)
     grp = j.groupby("race")
-    j["max_prog"] = grp["prog_num"].transform("max")
-    j["n_prog"] = grp["prog_num"].transform("count")
-    j["gap"] = (j["max_prog"] > j["n"]) & (j["n_prog"] == j["n"])
+    j["all_priced"] = grp["ltp_pl"].transform(lambda s: s.notna().all() and (s > 1).all())
+    full = j[j["all_priced"]].copy()
+    full["q_mkt"] = norm_probs(full, "ltp_pl", "race", full["n_winners"])
+    full["book_over_nw"] = full.groupby("race")["ltp_pl"].transform(lambda s: (1 / s).sum()) / full["n_winners"]
+    y = full["placed"].to_numpy(dtype=float)
+    rc = pd.factorize(full["race"])[0]
+    rdates = race_level(full, "date")
+    rmonth = race_level(full, "month")
+    rbook = race_level(full, "book_over_nw")
+    rharness = race_level(full, "harness").astype(bool)
+    ll_mkt = O.logloss_race(full["q_mkt"].to_numpy(), y, rc)
+    p_cal_filled = np.nan_to_num(full["p_cal"].to_numpy(), nan=0.5)
+    rc_has = np.bincount(rc, weights=full["p_cal"].notna().to_numpy()) == np.bincount(rc)
+    ll_cal = O.logloss_race(p_cal_filled, y, rc)
+    cal_blend = blend_grid_ll(full["q_mkt"].to_numpy(), p_cal_filled, y, rc)
+    wfc, chosen_c = walk_forward_blend(cal_blend, rmonth, rc_has)
+    hasc = ~np.isnan(wfc)
+    out({"section": "1_reproduction", "runtime_s": round(time.time() - t0, 1),
+         "joined_races": int(j["race"].nunique()), "fully_priced_races": int(len(ll_mkt)),
+         "evaluated_races_blend": int(hasc.sum()), "mid": str(pd.Timestamp(mid).date()),
+         "market_ltp_ll": r4(ll_mkt[hasc].mean()), "blend_ll": r4(wfc[hasc].mean()),
+         "median_w_market": float(np.median(list(chosen_c.values()))),
+         "blend_wf_cal_vs_market": gain_stats(wfc[hasc], ll_mkt[hasc], rdates[hasc], mid),
+         "p_cal_alone_vs_market": gain_stats(ll_cal[rc_has], ll_mkt[rc_has], rdates[rc_has], mid),
+         "fixed_w_market_0.25_cal_vs_market": gain_stats(cal_blend[0.25][rc_has], ll_mkt[rc_has], rdates[rc_has], mid)})
 
-    # place-market liquidity / consistency measures from ltp_pre only (pre-race information)
-    j["priced_pl"] = j["ltp_pl"].notna() & (j["ltp_pl"] > 1)
-    j["n_priced_pl"] = grp["priced_pl"].transform("sum")
-    j["all_priced"] = j["n_priced_pl"] == j["n"]
-    inv = (1 / j["ltp_pl"]).where(j["priced_pl"], 0.0)
-    j["book_lb"] = inv.groupby(j["race"]).transform("sum") / j["n_winners"]  # lower bound of the place book / n_winners
-    j["race_has_bsp"] = grp["bsp_pl"].transform(lambda s: s.notna().all() and (s > 1).all())
-    j["t30_state"] = np.where(j["t30_pl"].isna(), "t30_missing",
-                              np.where(np.isclose(j["t30_pl"], j["ltp_pl"]), "t30_equals_ltp_pre(no trade in last 30 min)", "t30_differs"))
+    # ------------------------------------------------------------------ 2. calibrated-market baseline
+    full["q_cal"], _ = O.calibrate_walk_forward(full, "q_mkt", sorted(full["month"].unique()))
+    q_cal_filled = np.nan_to_num(full["q_cal"].to_numpy(), nan=0.5)
+    rq_has = (np.bincount(rc, weights=full["q_cal"].notna().to_numpy()) == np.bincount(rc)) & rc_has
+    ll_qcal = O.logloss_race(q_cal_filled, y, rc)
+    qq_blend = blend_grid_ll(q_cal_filled, p_cal_filled, y, rc)
+    wfq, chosen_q = walk_forward_blend(qq_blend, rmonth, rq_has)
+    hq = ~np.isnan(wfq) & hasc
+    out({"section": "2_calibrated_market_baseline", "races": int(hq.sum()),
+         "calibrated_market_vs_market": gain_stats(ll_qcal[hq], ll_mkt[hq], rdates[hq], mid),
+         "blend_wf_cal_vs_market_same_races": gain_stats(wfc[hq], ll_mkt[hq], rdates[hq], mid),
+         "blend_wf_cal_vs_calibrated_market": gain_stats(wfc[hq], ll_qcal[hq], rdates[hq], mid),
+         "blend_qcal_pcal_wf_vs_market": gain_stats(wfq[hq], ll_mkt[hq], rdates[hq], mid),
+         "blend_qcal_pcal_wf_vs_calibrated_market": gain_stats(wfq[hq], ll_qcal[hq], rdates[hq], mid),
+         "median_w_on_calibrated_market": float(np.median(list(chosen_q.values()))) if chosen_q else None})
 
-    out({"section": "data", "runtime_s": round(time.time() - t0, 1), "joined_races": int(j["race"].nunique()),
-         "runners": int(len(j)), "mid": str(pd.Timestamp(mid).date()),
-         "from": str(pd.Timestamp(j["date"].min()).date()), "to": str(pd.Timestamp(j["date"].max()).date()),
-         "p_cal_coverage": r4(j["p_cal"].notna().mean()), "place_ltp_coverage": r4(j["priced_pl"].mean()),
-         "races_with_saddlecloth_gap": r4(j.drop_duplicates("race")["gap"].mean()),
-         "races_fully_priced": r4(j.drop_duplicates("race")["all_priced"].mean()),
-         "races_all_runners_have_place_bsp": r4(j.drop_duplicates("race")["race_has_bsp"].mean()),
-         "last_lambdas": {("harness" if c else "gallops"): v[:2] for (m, c), v in lam.items() if m == max(months_sorted)},
-         "cal_params_last": cal_params[max(cal_params)] if cal_params else None})
+    # ------------------------------------------------------------------ 3a. WIN-market in-play leakage test
+    # If ltp_pre contained in-play trades it would BEAT the WIN BSP in log loss; a pre-off (slightly stale)
+    # price must be slightly WORSE than the BSP.
+    jb = j[j.groupby("race")["bsp_win"].transform(lambda s: s.notna().all() and (s > 1).all())].copy()
+    jb["p_bsp_win"] = norm_probs(jb, "bsp_win", "race", 1)
+    rcw = pd.factorize(jb["race"])[0]
+    yw = jb["won_win"].to_numpy(dtype=float)
+    llw_ltp = np.bincount(rcw, weights=-yw * np.log(np.clip(jb["p_win"].to_numpy(), 1e-9, 1)))
+    llw_bsp = np.bincount(rcw, weights=-yw * np.log(np.clip(jb["p_bsp_win"].to_numpy(), 1e-9, 1)))
+    lr = np.log(jb["ltp_win"] / jb["bsp_win"]).abs()
+    pl = jb[jb["bsp_pl"].notna() & (jb["bsp_pl"] > 1) & jb["ltp_pl"].notna()]
+    lrp = np.log(pl["ltp_pl"] / pl["bsp_pl"]).abs()
+    tw = j[j["t30_win"].notna() & (j["t30_win"] > 1)]
+    tp = j[j["t30_pl"].notna() & (j["t30_pl"] > 1) & j["ltp_pl"].notna()]
+    inplay = {"section": "3a_win_ltp_pre_inplay_leak_test", "races": int(len(llw_ltp)),
+              "win_ltp_vs_win_bsp_logloss_gain(positive=ltp better=LEAK)": gain_stats(llw_ltp, llw_bsp, race_level(jb, "date"), mid),
+              "share_win_runners_abs_log_ltp_over_bsp_gt_0.3": r4((lr > 0.3).mean()),
+              "share_win_runners_abs_log_ltp_over_bsp_gt_0.5": r4((lr > 0.5).mean()),
+              "share_place_runners_abs_log_ltp_over_bsp_gt_0.3": r4((lrp > 0.3).mean()),
+              "share_place_runners_abs_log_ltp_over_bsp_gt_0.5": r4((lrp > 0.5).mean()),
+              "no_trade_last_30min_proxy_win(ltp_pre==ltp_t30|t30)": r4((tw["ltp_win"] == tw["t30_win"]).mean()),
+              "no_trade_last_30min_proxy_place(ltp_pre==ltp_t30|t30)": r4((tp["ltp_pl"] == tp["t30_pl"]).mean())}
+    gb = a.dir / "gb_win.parquet"
+    if gb.exists() and a.frac >= 1:
+        g = pd.read_parquet(gb, columns=["market_id", "selection_id", "ltp_pre", "bsp", "won", "date"]).drop_duplicates(["market_id", "selection_id"])
+        gg = g.groupby("market_id")
+        okm = (gg["won"].transform("sum") == 1) & gg["ltp_pre"].transform(lambda s: s.notna().all() and (s > 1).all()) \
+            & gg["bsp"].transform(lambda s: s.notna().all() and (s > 1).all())
+        g = g[okm].copy()
+        g["race"] = pd.factorize(g["market_id"])[0]
+        g["pw"] = norm_probs(g, "ltp_pre", "race", 1)
+        g["pb"] = norm_probs(g, "bsp", "race", 1)
+        rg = g["race"].to_numpy(); yg = g["won"].to_numpy(dtype=float)
+        a_ = np.bincount(rg, weights=-yg * np.log(np.clip(g["pw"].to_numpy(), 1e-9, 1)))
+        b_ = np.bincount(rg, weights=-yg * np.log(np.clip(g["pb"].to_numpy(), 1e-9, 1)))
+        inplay["gb_win_ltp_vs_bsp_gain_check"] = {"races": int(len(a_)), "gain": r4((b_ - a_).mean()),
+                                                  "se": r4((b_ - a_).std(ddof=1) / math.sqrt(len(a_)))}
+        del g
+    out(inplay)
 
-    bettable = j[j["priced_pl"]].copy()
-    edge = (bettable["ltp_pl"] * bettable["p_cal"] - 1).to_numpy()
-    sel = bettable[edge > K].copy()
-
-    # ---- 1. reproduction of the headline cell -----------------------------------------
-    head = cell(sel, mid)
-    out({"section": "1_reproduction_k0.1_all_p_cal", **head,
-         "bets_per_race_mean": r4(len(sel) / max(sel["race"].nunique(), 1)),
-         "z_c5_per_bet": r4(head["roi_c5"] / head["se"]) if head.get("se") else None,
-         "z_c5_race_clustered": r4(head["roi_c5"] / head["se_race_clustered"]) if head.get("se_race_clustered") else None})
-    for name, mask in {"gallops": ~sel["harness"], "harness": sel["harness"]}.items():
-        out({"section": f"1_reproduction_k0.1_{name}", **cell(sel[mask], mid)})
-    # blind reference on the same price field
-    out({"section": "1_reference_blind_back_all_priced", **cell(bettable, mid)})
-
-    # ---- 2. under-round place books at ltp_pre ----------------------------------------
+    # ------------------------------------------------------------------ 3b. gain by pre-race place-book tightness
     rows = []
-    sel_full = sel[sel["all_priced"]]
-    for lo, hi in [(0, 0.90), (0.90, 0.95), (0.95, 1.0), (1.0, 1.05), (1.05, 1.15), (1.15, 9)]:
-        g = sel_full[(sel_full["book_lb"] >= lo) & (sel_full["book_lb"] < hi)]
-        rows.append({"book_over_nw": f"{lo:g}-{hi:g}", **cell(g, mid)})
-    out({"section": "2_selected_bets_fully_priced_races_by_ltp_place_book", "rows": rows,
-         "share_of_selected_bets_in_fully_priced_races": r4(sel["all_priced"].mean()),
-         "share_fully_priced_selected_in_under_round_book": r4((sel_full["book_lb"] < 1).mean()),
-         "share_fully_priced_blind_in_under_round_book": r4((bettable.loc[bettable["all_priced"], "book_lb"] < 1).mean()),
-         "median_book_selected_fully_priced": r4(sel_full["book_lb"].median()),
-         "median_book_all_fully_priced_races": r4(j.loc[j["all_priced"]].drop_duplicates("race")["book_lb"].median())})
+    for lo, hi in [(0, 0.9), (0.9, 0.97), (0.97, 1.03), (1.03, 1.1), (1.1, 9)]:
+        sel = hasc & (rbook >= lo) & (rbook < hi)
+        if sel.sum() > 50:
+            gs = gain_stats(wfc[sel], ll_mkt[sel], rdates[sel], mid)
+            rows.append({"place_book_over_n_winners": f"{lo}-{hi}", "races": int(sel.sum()), "gain": gs["gain"],
+                         "se": gs["gain_se"], "halves": gs["halves_gain"], "median_gain": gs["median_gain"]})
+    out({"section": "3b_gain_by_place_book_tightness_pre_race", "rows": rows,
+         "gallops": gain_stats(wfc[hasc & ~rharness], ll_mkt[hasc & ~rharness], rdates[hasc & ~rharness], mid),
+         "harness": gain_stats(wfc[hasc & rharness], ll_mkt[hasc & rharness], rdates[hasc & rharness], mid)})
+
+    # ------------------------------------------------------------------ 3c. against the place BSP, and by staleness
+    full["all_bsp"] = full.groupby("race")["bsp_pl"].transform(lambda s: s.notna().all() and (s > 1).all())
+    full["all_bsp_win"] = full.groupby("race")["bsp_win"].transform(lambda s: s.notna().all() and (s > 1).all())
+    fb_mask_r = (np.bincount(rc, weights=full["all_bsp"].to_numpy()) == np.bincount(rc)) & hasc
+    fb = full[full["all_bsp"]].copy()
+    fb["q_bsp"] = norm_probs(fb, "bsp_pl", "race", fb["n_winners"])
+    fb["stale_pl"] = np.log(fb["bsp_pl"] / fb["ltp_pl"]).abs()
+    fb["stale_win"] = np.log(fb["bsp_win"] / fb["ltp_win"]).abs().where(fb["bsp_win"] > 1)
+    fb["stale_pl_r"] = fb.groupby("race")["stale_pl"].transform("mean")
+    fb["stale_win_r"] = fb.groupby("race")["stale_win"].transform("mean")
+    rcb = pd.factorize(fb["race"])[0]
+    yb = fb["placed"].to_numpy(dtype=float)
+    ll_bsp = O.logloss_race(fb["q_bsp"].to_numpy(), yb, rcb)
+    # align the already computed per-race arrays to fb's races
+    race_ids = pd.unique(full["race"])
+    pos = pd.Series(np.arange(len(race_ids)), index=race_ids)
+    idx = pos.reindex(pd.unique(fb["race"])).to_numpy()
+    sub = hasc[idx]
+    d_b = rdates[idx][sub]
+    res = {"section": "3c_vs_place_bsp", "races": int(sub.sum()),
+           "market_ltp_vs_bsp": gain_stats(ll_mkt[idx][sub], ll_bsp[sub], d_b, mid),
+           "blend_wf_cal_vs_bsp": gain_stats(wfc[idx][sub], ll_bsp[sub], d_b, mid),
+           "p_cal_vs_bsp": gain_stats(ll_cal[idx][sub], ll_bsp[sub], d_b, mid)}
+    spr = race_level(fb, "stale_pl_r")
+    swr = race_level(fb, "stale_win_r")
     rows = []
-    sel_part = sel[~sel["all_priced"]]
-    sel_part = sel_part.assign(share_priced=sel_part["n_priced_pl"] / sel_part["n"])
-    for lo, hi in [(0, 0.5), (0.5, 0.75), (0.75, 1.0)]:
-        g = sel_part[(sel_part["share_priced"] >= lo) & (sel_part["share_priced"] < hi)]
-        rows.append({"share_of_runners_priced": f"{lo:g}-{hi:g}", **cell(g, mid)})
-    out({"section": "2_selected_bets_partially_priced_races_by_share_priced", "rows": rows})
-    # a book that is over-round even at its lower bound is a consistent set of quotes
-    cons = sel[sel["book_lb"] >= 1.0]
-    incons = sel[sel["book_lb"] < 1.0]
-    out({"section": "2_selected_bets_book_lower_bound_split",
-         "book_lb_ge_1_consistent_quotes": cell(cons, mid), "book_lb_lt_1": cell(incons, mid)})
-    # races with 2+ selected runners: two "10% value" place prices in one race force a stale book
-    sel["n_sel_race"] = sel.groupby("race")["selection_id"].transform("size")
-    out({"section": "2_selected_bets_by_number_selected_in_race",
-         "one_selected": cell(sel[sel["n_sel_race"] == 1], mid), "two_plus_selected": cell(sel[sel["n_sel_race"] >= 2], mid)})
+    qs = np.nanpercentile(spr[sub], [25, 50, 75])
+    edges = [-1, qs[0], qs[1], qs[2], 99]
+    for lo, hi in zip(edges, edges[1:]):
+        s = sub & (spr > lo) & (spr <= hi)
+        rows.append({"place_staleness_quartile(mean|log bsp/ltp|)": f"{max(lo,0):.3f}-{hi:.3f}", "races": int(s.sum()),
+                     "blend_vs_ltp_market": [r4((ll_mkt[idx][s] - wfc[idx][s]).mean()), r4((ll_mkt[idx][s] - wfc[idx][s]).std(ddof=1) / math.sqrt(s.sum()))],
+                     "blend_vs_bsp": [r4((ll_bsp[s] - wfc[idx][s]).mean()), r4((ll_bsp[s] - wfc[idx][s]).std(ddof=1) / math.sqrt(s.sum()))],
+                     "ltp_market_vs_bsp": r4((ll_bsp[s] - ll_mkt[idx][s]).mean()),
+                     "mean_win_staleness": r4(np.nanmean(swr[s]))})
+    res["by_place_staleness"] = rows
+    out(res)
 
-    # ---- 3. staleness marker: ltp_t30 vs ltp_pre --------------------------------------
-    rows = []
-    for st, g in sel.groupby("t30_state"):
-        rows.append({"state": st, **cell(g, mid)})
-    out({"section": "3_selected_bets_by_t30_state", "rows": rows,
-         "blind_share_t30_equals_ltp_pre": r4((bettable["t30_state"].str.startswith("t30_equals")).mean()),
-         "selected_share_t30_equals_ltp_pre": r4((sel["t30_state"].str.startswith("t30_equals")).mean())})
+    # ------------------------------------------------------------------ 3d. model from the 30-minute-old WIN price vs the fresher place ltp_pre market
+    j["all_t30_win"] = j.groupby("race")["t30_win"].transform(lambda s: s.notna().all() and (s > 1).all())
+    j2 = j[j["all_t30_win"]].copy()
+    j2["race"] = pd.factorize(j2["win_mid"])[0]
+    j2 = j2.sort_values(["race", "t30_win", "selection_id"]).reset_index(drop=True)
+    j2["pos"] = j2.groupby("race").cumcount()
+    j2["p_win_t30"] = norm_probs(j2, "t30_win", "race", 1)
+    P2 = O.pad(j2, "p_win_t30")
+    r2 = j2.drop_duplicates("race").set_index("race").sort_index()
+    j2["p_fair_t30"] = O.derived_place_probs(j2, P2, r2["n_winners"].to_numpy(), lam, r2["month"].to_numpy(), r2["harness"].to_numpy())
+    j2 = j2[j2["p_fair_t30"].notna()].copy()
+    j2["p_cal_t30"], _ = O.calibrate_walk_forward(j2, "p_fair_t30", sorted(j2["month"].unique()))
+    full["all_t30_pl"] = full.groupby("race")["t30_pl"].transform(lambda s: s.notna().all() and (s > 1).all())
+    f2 = full.merge(j2[["win_mid", "selection_id", "p_fair_t30", "p_cal_t30"]], on=["win_mid", "selection_id"], how="inner")
+    f2 = f2[f2.groupby("race")["p_cal_t30"].transform(lambda s: s.notna().all()) & f2["p_cal"].notna()].copy()
+    rc2 = pd.factorize(f2["race"])[0]
+    y2 = f2["placed"].to_numpy(dtype=float)
+    rm2 = race_level(f2, "month")
+    rd2 = race_level(f2, "date")
+    ll_m2 = O.logloss_race(f2["q_mkt"].to_numpy(), y2, rc2)
+    ll_c2 = O.logloss_race(f2["p_cal"].to_numpy(), y2, rc2)
+    ll_t2 = O.logloss_race(f2["p_cal_t30"].to_numpy(), y2, rc2)
+    bl_pre = blend_grid_ll(f2["q_mkt"].to_numpy(), f2["p_cal"].to_numpy(), y2, rc2)
+    bl_t30 = blend_grid_ll(f2["q_mkt"].to_numpy(), f2["p_cal_t30"].to_numpy(), y2, rc2)
+    ones = np.ones(len(ll_m2), dtype=bool)
+    wf_pre, ch_pre = walk_forward_blend(bl_pre, rm2, ones)
+    wf_t30, ch_t30 = walk_forward_blend(bl_t30, rm2, ones)
+    h2 = ~np.isnan(wf_pre) & ~np.isnan(wf_t30)
+    # the WIN market's own information loss from t30 to ltp_pre, on the same races
+    f2["p_win_t30n"] = norm_probs(f2, "t30_win", "race", 1)
+    yw2 = f2["won_win"].to_numpy(dtype=float)
+    lw_pre = np.bincount(rc2, weights=-yw2 * np.log(np.clip(f2["p_win"].to_numpy(), 1e-9, 1)))
+    lw_t30 = np.bincount(rc2, weights=-yw2 * np.log(np.clip(f2["p_win_t30n"].to_numpy(), 1e-9, 1)))
+    out({"section": "3d_win_t30_model_vs_place_ltp_pre_market", "races": int(h2.sum()),
+         "note": "same races; q_mkt is the place market at ltp_pre; p_cal_t30 is derived from the WIN price 30 min before the start",
+         "p_cal_from_win_ltp_pre_vs_market": gain_stats(ll_c2[h2], ll_m2[h2], rd2[h2], mid),
+         "p_cal_from_win_t30_vs_market": gain_stats(ll_t2[h2], ll_m2[h2], rd2[h2], mid),
+         "blend_wf_ltp_pre_vs_market": gain_stats(wf_pre[h2], ll_m2[h2], rd2[h2], mid),
+         "blend_wf_t30_vs_market": gain_stats(wf_t30[h2], ll_m2[h2], rd2[h2], mid),
+         "fixed_w0.25_t30_vs_market": gain_stats(bl_t30[0.25][h2], ll_m2[h2], rd2[h2], mid),
+         "fixed_w0.5_t30_vs_market": gain_stats(bl_t30[0.5][h2], ll_m2[h2], rd2[h2], mid),
+         "median_w_market_pre": float(np.median(list(ch_pre.values()))) if ch_pre else None,
+         "median_w_market_t30": float(np.median(list(ch_t30.values()))) if ch_t30 else None,
+         "win_market_ltp_pre_vs_t30_own_gain": gain_stats(lw_pre[h2], lw_t30[h2], rd2[h2], mid)})
 
-    # ---- 4. scratching proxy ------------------------------------------------------------
-    out({"section": "4_selected_bets_by_saddlecloth_gap",
-         "gap": cell(sel[sel["gap"]], mid), "no_gap": cell(sel[~sel["gap"]], mid),
-         "blind_gap": cell(bettable[bettable["gap"]], mid), "blind_no_gap": cell(bettable[~bettable["gap"]], mid)})
-
-    # ---- 5. null models: does any p give the same ltp edge? -----------------------------
-    rows = []
-    for pcol in ("p_cal", "p_fair", "p_harv1", "p_crude"):
-        e = (bettable["ltp_pl"] * bettable[pcol] - 1).to_numpy()
-        g = bettable[e > K]
-        rows.append({"prob": pcol, **cell(g, mid, prob_col=pcol)})
-        # mirror tail: market shorter than p by 10%, backed anyway
-        gneg = bettable[e < -K]
-        c2 = cell(gneg, mid, prob_col=pcol)
-        rows[-1]["shorter_than_p_by_10pct_backed_anyway"] = {kk: c2.get(kk) for kk in
-                                                             ("bets", "roi_c5", "se", "roi_c5_settle_bsp", "median_place_bsp_over_ltp", "median_win_bsp_over_ltp")}
-    out({"section": "5_null_models_k0.1_all", "rows": rows})
-    # same selected bets, place probability from the place market itself (fully priced races):
-    # ltp*q_mkt is constant within a race, so instead report mean q_mkt vs strike for the selected bets
-    fp = sel[sel["all_priced"]].copy()
-    fp["q_mkt"] = (1 / fp["ltp_pl"]) * fp["n_winners"] / (fp["book_lb"] * fp["n_winners"])
-    out({"section": "5_selected_fully_priced_probabilities", "bets": int(len(fp)), "strike": r4(fp["placed"].mean()),
-         "mean_p_cal": r4(fp["p_cal"].mean()), "mean_q_mkt_ltp_normalised": r4(fp["q_mkt"].mean()),
-         "mean_1_over_ltp": r4((1 / fp["ltp_pl"]).mean()),
-         "mean_1_over_bsp_where_present": r4((1 / fp.loc[fp["bsp_pl"] > 1, "bsp_pl"]).mean())})
-
-    # ---- 6. where the paper profit sits: ltp_pre vs BSP (post hoc) --------------------
-    hb = sel[sel["bsp_pl"].notna() & (sel["bsp_pl"] > 1)].copy()
-    hb["ratio"] = hb["ltp_pl"] / hb["bsp_pl"]
-    rows = []
-    for lo, hi in [(0, 0.9), (0.9, 0.98), (0.98, 1.02), (1.02, 1.1), (1.1, 1.25), (1.25, 1.5), (1.5, 99)]:
-        g = hb[(hb["ratio"] >= lo) & (hb["ratio"] < hi)]
-        c = cell(g, mid)
-        rows.append({"ltp_over_bsp": f"{lo:g}-{hi:g}", "bets": c.get("bets"), "roi_c5_at_ltp": c.get("roi_c5"), "se": c.get("se"),
-                     "roi_c5_at_bsp": c.get("roi_c5_settle_bsp"), "strike": c.get("strike"), "mean_p_cal": r4(g["p_cal"].mean())})
-    out({"section": "6_selected_bets_with_bsp_by_ltp_over_bsp", "rows": rows,
-         "share_ltp_above_bsp": r4((hb["ratio"] > 1).mean()), "share_ltp_above_bsp_blind": r4(
-             (bettable.loc[bettable["bsp_pl"] > 1, "ltp_pl"] > bettable.loc[bettable["bsp_pl"] > 1, "bsp_pl"]).mean()),
-         "roi_c5_at_ltp_bets_with_ltp_within_2pct_of_bsp": rows[2]["roi_c5_at_ltp"]})
-    # same rule with the WIN market: is the win ltp also stale for these races? (win bsp/ltp for the selected runner)
-    hw = hb[hb["bsp_win"].notna() & (hb["bsp_win"] > 1)]
-    out({"section": "6_win_side_of_selected_bets", "bets": int(len(hw)),
-         "median_win_bsp_over_ltp": r4((hw["bsp_win"] / hw["ltp_win"]).median()),
-         "share_win_ltp_within_5pct_of_win_bsp": r4(((hw["bsp_win"] / hw["ltp_win"]).sub(1).abs() < 0.05).mean()),
-         "share_place_ltp_within_5pct_of_place_bsp": r4(((hw["bsp_pl"] / hw["ltp_pl"]).sub(1).abs() < 0.05).mean())})
-
-    # ---- 7. winner's curse on p_cal -------------------------------------------------------
-    out({"section": "7_winners_curse_bsp_subset", "bets": int(len(hb)),
-         "mean_p_cal": r4(hb["p_cal"].mean()), "strike": r4(hb["placed"].mean()),
-         "mean_1_over_ltp": r4((1 / hb["ltp_pl"]).mean()), "mean_1_over_bsp": r4((1 / hb["bsp_pl"]).mean()),
-         "strike_over_mean_p_cal": r4(hb["placed"].mean() / hb["p_cal"].mean()),
-         "blind_bsp_subset": {"mean_p_cal": r4(bettable.loc[bettable["bsp_pl"] > 1, "p_cal"].mean()),
-                              "strike": r4(bettable.loc[bettable["bsp_pl"] > 1, "placed"].mean())}})
-
-    # ---- 8. a bettable price proxy: the smaller of ltp_pre and the one-minute-older ltp_t30? (not available)
-    # Instead: the rule evaluated on the subset where the place market was liquid enough to have an SP
-    # for every runner AND a consistent (over-round) ltp book.
-    liq = sel[sel["race_has_bsp"] & (sel["book_lb"] >= 1.0)]
-    out({"section": "8_selected_bets_liquid_consistent_races", **cell(liq, mid)})
-
-    # ---- 9. corrected estimate of the executable edge ------------------------------------
-    # decide on ltp_pre (as the claim), settle at the place BSP (the price a market order gets), all codes
-    out({"section": "9_corrected_estimate", "decide_ltp_settle_bsp": {kk: head.get(kk) for kk in
-         ("bets", "bsp_cover", "roi_c5_settle_bsp", "bsp_se", "bsp_halves_c5", "roi_c5_worse_of_ltp_bsp")},
-         "roi_c8_settle_bsp": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.08).mean()),
-         "roi_c0_settle_bsp": r4(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.0).mean()),
-         "bsp_se_race_clustered": r4(cluster_se(w2p.returns(hb["bsp_pl"], hb["placed"], hb["dh"], 0.05), hb["race"].to_numpy())),
-         "runtime_s": round(time.time() - t0, 1)})
+    # ------------------------------------------------------------------ 3e. tiny like-for-like at t30 (both markets fully priced 30 min out)
+    f3 = f2[f2["all_t30_pl"]].copy()
+    if f3["race"].nunique() > 50:
+        f3["q_t30"] = norm_probs(f3, "t30_pl", "race", f3["n_winners"])
+        rc3 = pd.factorize(f3["race"])[0]
+        y3 = f3["placed"].to_numpy(dtype=float)
+        rd3 = race_level(f3, "date")
+        m3 = O.logloss_race(f3["q_t30"].to_numpy(), y3, rc3)
+        mp3 = O.logloss_race(f3["q_mkt"].to_numpy(), y3, rc3)
+        t3 = O.logloss_race(f3["p_cal_t30"].to_numpy(), y3, rc3)
+        c3 = O.logloss_race(f3["p_cal"].to_numpy(), y3, rc3)
+        b3 = O.logloss_race(0.25 * f3["q_t30"].to_numpy() + 0.75 * f3["p_cal_t30"].to_numpy(), y3, rc3)
+        out({"section": "3e_like_for_like_t30_small", "races": int(len(m3)),
+             "place_t30_market_ll": r4(m3.mean()), "place_ltp_pre_market_ll": r4(mp3.mean()),
+             "p_cal_t30_vs_place_t30_market": gain_stats(t3, m3, rd3, mid),
+             "blend_0.25_t30_market_0.75_p_cal_t30_vs_place_t30_market": gain_stats(b3, m3, rd3, mid),
+             "p_cal_ltp_pre_vs_place_t30_market": gain_stats(c3, m3, rd3, mid),
+             "p_cal_t30_vs_place_ltp_pre_market": gain_stats(t3, mp3, rd3, mid)})
+    out({"section": "totals", "runtime_s": round(time.time() - t0, 1)})
     return 0
 
 
